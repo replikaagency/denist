@@ -10,11 +10,45 @@
 
 import { type NextRequest } from 'next/server';
 import { successResponse, errorResponse, handleRouteError } from '@/lib/response';
+import { requireStaffAuth } from '@/lib/auth';
 import { ConversationCreateSchema } from '@/lib/schemas/conversation';
 import { findContactBySessionToken, createContact } from '@/lib/db/contacts';
 import { createConversation } from '@/lib/db/conversations';
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 import type { Conversation } from '@/types/database';
+
+/**
+ * GET /api/conversations — list conversations (staff only)
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const auth = await requireStaffAuth();
+    if (!auth.authenticated) return auth.response;
+
+    const searchParams = Object.fromEntries(request.nextUrl.searchParams.entries());
+    const status = searchParams.status;
+    const limit = Math.min(parseInt(searchParams.limit ?? '50', 10) || 50, 100);
+    const offset = parseInt(searchParams.offset ?? '0', 10) || 0;
+
+    const supabase = createSupabaseAdminClient();
+    let query = supabase
+      .from('conversations')
+      .select('*, contact:contacts(*)', { count: 'exact' })
+      .order('last_message_at', { ascending: false, nullsFirst: false })
+      .range(offset, offset + limit - 1);
+
+    if (status) {
+      query = query.eq('status', status);
+    }
+
+    const { data, error, count } = await query;
+    if (error) throw error;
+
+    return successResponse({ conversations: data ?? [], total: count ?? 0, limit, offset });
+  } catch (err) {
+    return handleRouteError(err);
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {

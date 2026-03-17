@@ -5,6 +5,7 @@
 
 import { type NextRequest } from 'next/server';
 import { successResponse, errorResponse, handleRouteError } from '@/lib/response';
+import { requireStaffAuth } from '@/lib/auth';
 import { LeadUpdateSchema } from '@/lib/schemas/lead';
 import { getLeadById, updateLead } from '@/lib/db/leads';
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
@@ -13,6 +14,9 @@ type RouteParams = { params: Promise<{ id: string }> };
 
 export async function GET(_req: NextRequest, { params }: RouteParams) {
   try {
+    const auth = await requireStaffAuth();
+    if (!auth.authenticated) return auth.response;
+
     const { id } = await params;
 
     const { data, error } = await createSupabaseAdminClient()
@@ -32,6 +36,9 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
 
 export async function PATCH(request: NextRequest, { params }: RouteParams) {
   try {
+    const auth = await requireStaffAuth();
+    if (!auth.authenticated) return auth.response;
+
     const { id } = await params;
 
     const body = await request.json();

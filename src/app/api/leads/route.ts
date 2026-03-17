@@ -4,11 +4,15 @@
 
 import { type NextRequest } from 'next/server';
 import { successResponse, errorResponse, handleRouteError } from '@/lib/response';
+import { requireStaffAuth } from '@/lib/auth';
 import { LeadListQuerySchema } from '@/lib/schemas/lead';
 import { listLeads } from '@/lib/db/leads';
 
 export async function GET(request: NextRequest) {
   try {
+    const auth = await requireStaffAuth();
+    if (!auth.authenticated) return auth.response;
+
     const searchParams = Object.fromEntries(request.nextUrl.searchParams.entries());
     const parsed = LeadListQuerySchema.safeParse(searchParams);
     if (!parsed.success) {

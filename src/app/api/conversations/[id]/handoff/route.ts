@@ -1,17 +1,11 @@
 // =============================================================================
 // POST /api/conversations/[id]/handoff
 // Manually trigger a human handoff (e.g. patient clicks "Talk to a person").
-//
-// Flow:
-//  1. Validate body
-//  2. Verify conversation exists and is not already handed off
-//  3. Persist a handoff_event
-//  4. Flip conversation to waiting_human, disable AI
-//  5. Return handoff event
 // =============================================================================
 
 import { type NextRequest } from 'next/server';
 import { successResponse, errorResponse, handleRouteError } from '@/lib/response';
+import { requireStaffAuth } from '@/lib/auth';
 import { HandoffCreateSchema } from '@/lib/schemas/handoff';
 import { getConversationById, updateConversation } from '@/lib/db/conversations';
 import { createHandoffEvent, getOpenHandoffForConversation } from '@/lib/db/handoffs';
@@ -21,6 +15,9 @@ type RouteParams = { params: Promise<{ id: string }> };
 
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
+    const auth = await requireStaffAuth();
+    if (!auth.authenticated) return auth.response;
+
     const { id } = await params;
 
     const body = await request.json();

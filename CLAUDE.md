@@ -10,18 +10,19 @@ Build the staff-side operational MVP for a dental AI receptionist.
 - Leads are created automatically
 - Appointment requests are created automatically
 - Handoff events are created automatically
-- No staff dashboard UI yet
-- No staff auth yet
-- No realtime staff messaging yet
-- No rate limiting yet
+- Staff auth with Supabase Auth (login page, middleware, route protection)
+- Staff dashboard with conversations list + detail, leads list, appointments list
+- Human reply + takeover flow with status transitions
+- Realtime updates on conversations list and message detail
+- Basic rate limiting on chat endpoints
 
-## Tonight priority
-1. Staff auth with Supabase Auth
-2. Protected staff dashboard
-3. Staff conversations list + detail
-4. Human reply / takeover flow
-5. Realtime updates with Supabase Realtime
-6. Basic production hardening
+## Next priorities
+- Test end-to-end flow with real Supabase project
+- Add Supabase Realtime Postgres publication for `messages` and `conversations` tables
+- Staff notifications for new handoffs (email or in-app)
+- Conversation search/filter in dashboard
+- Mobile-responsive dashboard
+- Streaming AI responses
 
 ## Rules
 - Do not redesign the patient chat unless required

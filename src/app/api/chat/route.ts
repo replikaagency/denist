@@ -2,6 +2,8 @@ import { type NextRequest } from 'next/server';
 import { successResponse, errorResponse, handleRouteError } from '@/lib/response';
 import { InboundMessageSchema } from '@/lib/schemas/message';
 import { processChatMessage } from '@/services/chat.service';
+import { checkRateLimit } from '@/lib/rate-limit';
+import { LIMITS } from '@/config/constants';
 
 export async function POST(request: NextRequest) {
   try {
@@ -9,6 +11,17 @@ export async function POST(request: NextRequest) {
     const parsed = InboundMessageSchema.safeParse(body);
     if (!parsed.success) {
       return errorResponse('VALIDATION_ERROR', 'Invalid request body', 400, parsed.error.issues);
+    }
+
+    // Rate limit by session token
+    const rateLimitKey = `chat:${parsed.data.session_token}`;
+    const limit = checkRateLimit(rateLimitKey, LIMITS.MAX_MESSAGES_PER_MINUTE, 60_000);
+    if (!limit.allowed) {
+      return errorResponse(
+        'RATE_LIMITED',
+        'Too many messages. Please wait a moment before sending another.',
+        429,
+      );
     }
 
     const result = await processChatMessage(parsed.data);

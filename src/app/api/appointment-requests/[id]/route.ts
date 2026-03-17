@@ -5,6 +5,7 @@
 
 import { type NextRequest } from 'next/server';
 import { successResponse, errorResponse, handleRouteError } from '@/lib/response';
+import { requireStaffAuth } from '@/lib/auth';
 import { AppointmentRequestUpdateSchema } from '@/lib/schemas/appointment';
 import { getAppointmentRequestById, updateAppointmentRequest } from '@/lib/db/appointments';
 import { advanceLeadStatus } from '@/lib/db/leads';
@@ -14,6 +15,9 @@ type RouteParams = { params: Promise<{ id: string }> };
 
 export async function GET(_req: NextRequest, { params }: RouteParams) {
   try {
+    const auth = await requireStaffAuth();
+    if (!auth.authenticated) return auth.response;
+
     const { id } = await params;
     const appt = await getAppointmentRequestById(id);
     return successResponse({ appointment_request: appt });
@@ -24,6 +28,9 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
 
 export async function PATCH(request: NextRequest, { params }: RouteParams) {
   try {
+    const auth = await requireStaffAuth();
+    if (!auth.authenticated) return auth.response;
+
     const { id } = await params;
 
     const body = await request.json();

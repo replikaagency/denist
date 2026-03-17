@@ -6,6 +6,7 @@ import { startOrResumeConversation } from '@/services/conversation.service';
 import { insertMessage } from '@/lib/db/messages';
 import { getRecentMessages } from '@/lib/db/messages';
 import { AI_GREETING } from '@/config/constants';
+import { checkRateLimit } from '@/lib/rate-limit';
 
 const StartChatSchema = z.object({
   session_token: z.string().min(1).max(200),
@@ -23,6 +24,13 @@ export async function POST(request: NextRequest) {
     const parsed = StartChatSchema.safeParse(body);
     if (!parsed.success) {
       return errorResponse('VALIDATION_ERROR', 'Invalid request body', 400, parsed.error.issues);
+    }
+
+    // Rate limit: 10 starts per minute per session token
+    const rateLimitKey = `chat-start:${parsed.data.session_token}`;
+    const limit = checkRateLimit(rateLimitKey, 10, 60_000);
+    if (!limit.allowed) {
+      return errorResponse('RATE_LIMITED', 'Too many requests. Please wait a moment.', 429);
     }
 
     const contact = await resolveContact(parsed.data.session_token);

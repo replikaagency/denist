@@ -5,6 +5,7 @@
 
 import { type NextRequest } from 'next/server';
 import { successResponse, errorResponse, handleRouteError } from '@/lib/response';
+import { requireStaffAuth } from '@/lib/auth';
 import { ConversationUpdateSchema } from '@/lib/schemas/conversation';
 import { getConversationById, updateConversation } from '@/lib/db/conversations';
 import { getAllMessages } from '@/lib/db/messages';
@@ -13,6 +14,9 @@ type RouteParams = { params: Promise<{ id: string }> };
 
 export async function GET(_req: NextRequest, { params }: RouteParams) {
   try {
+    const auth = await requireStaffAuth();
+    if (!auth.authenticated) return auth.response;
+
     const { id } = await params;
     const conversation = await getConversationById(id);
     const messages = await getAllMessages(id);
@@ -24,6 +28,9 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
 
 export async function PATCH(request: NextRequest, { params }: RouteParams) {
   try {
+    const auth = await requireStaffAuth();
+    if (!auth.authenticated) return auth.response;
+
     const { id } = await params;
 
     const body = await request.json();

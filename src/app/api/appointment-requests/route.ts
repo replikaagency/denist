@@ -5,11 +5,15 @@
 
 import { type NextRequest } from 'next/server';
 import { successResponse, errorResponse, handleRouteError } from '@/lib/response';
+import { requireStaffAuth } from '@/lib/auth';
 import { AppointmentListQuerySchema, AppointmentRequestCreateSchema } from '@/lib/schemas/appointment';
 import { listAppointmentRequests, createAppointmentRequest } from '@/lib/db/appointments';
 
 export async function GET(request: NextRequest) {
   try {
+    const auth = await requireStaffAuth();
+    if (!auth.authenticated) return auth.response;
+
     const searchParams = Object.fromEntries(request.nextUrl.searchParams.entries());
     const parsed = AppointmentListQuerySchema.safeParse(searchParams);
     if (!parsed.success) {
@@ -25,6 +29,9 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    const auth = await requireStaffAuth();
+    if (!auth.authenticated) return auth.response;
+
     const body = await request.json();
     const parsed = AppointmentRequestCreateSchema.safeParse(body);
     if (!parsed.success) {
