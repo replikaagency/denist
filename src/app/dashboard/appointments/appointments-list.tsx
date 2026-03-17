@@ -1,9 +1,19 @@
 'use client';
 
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 
 const STATUS_COLORS: Record<string, string> = {
   pending: 'bg-amber-100 text-amber-800',
@@ -44,6 +54,12 @@ function formatDate(iso: string | null) {
   });
 }
 
+/** Format local date for datetime-local input (YYYY-MM-DDTHH:mm) */
+function toDatetimeLocal(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export function AppointmentsList({
   requests,
   total,
@@ -52,17 +68,43 @@ export function AppointmentsList({
   total: number;
 }) {
   const router = useRouter();
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [confirmDatetime, setConfirmDatetime] = useState('');
 
-  async function updateStatus(id: string, status: string) {
-    await fetch(`/api/appointment-requests/${id}`, {
+  function openConfirmDialog(id: string) {
+    const d = new Date();
+    d.setHours(9, 0, 0, 0);
+    setConfirmDatetime(toDatetimeLocal(d));
+    setConfirmingId(id);
+  }
+
+  async function updateStatus(id: string, status: string, confirmed_datetime?: string) {
+    const body: Record<string, string> = { status };
+    if (confirmed_datetime) body.confirmed_datetime = confirmed_datetime;
+
+    const res = await fetch(`/api/appointment-requests/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify(body),
     });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err?.error?.message ?? 'Update failed');
+      return;
+    }
+    setConfirmingId(null);
     router.refresh();
   }
 
+  async function submitConfirm() {
+    if (!confirmingId || !confirmDatetime.trim()) return;
+    const iso = new Date(confirmDatetime).toISOString();
+    await updateStatus(confirmingId, 'confirmed', iso);
+  }
+
   return (
+    <>
     <Card>
       <CardHeader className="py-3 px-5">
         <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -116,7 +158,7 @@ export function AppointmentsList({
                           size="sm"
                           variant="outline"
                           className="text-xs"
-                          onClick={() => updateStatus(req.id as string, 'confirmed')}
+                          onClick={() => openConfirmDialog(req.id as string)}
                         >
                           Confirm
                         </Button>
@@ -138,5 +180,39 @@ export function AppointmentsList({
         )}
       </CardContent>
     </Card>
+
+    <Dialog open={!!confirmingId} onOpenChange={(open) => !open && setConfirmingId(null)}>
+      <DialogContent showCloseButton={true}>
+        <DialogHeader>
+          <DialogTitle>Confirm appointment</DialogTitle>
+          <DialogDescription>
+            Enter the booked date and time. This is required to confirm the request.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-2 py-2">
+          <label htmlFor="confirm-datetime" className="text-sm font-medium">
+            Date & time
+          </label>
+          <Input
+            id="confirm-datetime"
+            type="datetime-local"
+            value={confirmDatetime}
+            onChange={(e) => setConfirmDatetime(e.target.value)}
+          />
+        </div>
+        <DialogFooter showCloseButton={false}>
+          <Button variant="outline" onClick={() => setConfirmingId(null)}>
+            Cancel
+          </Button>
+          <Button
+            onClick={submitConfirm}
+            disabled={!confirmDatetime.trim()}
+          >
+            Confirm
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

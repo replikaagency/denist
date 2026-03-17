@@ -163,6 +163,29 @@ export function applyFallbacks(
     };
   }
 
+  // Fallback 5: Appointment completion with misleading "let me check" — we have no real availability
+  const isSchedulingIntent =
+    output.intent === "appointment_request" || output.intent === "appointment_reschedule";
+  const isCompletionAction =
+    output.next_action === "offer_appointment" || output.next_action === "confirm_details";
+  const misleadingPhrases = [
+    "let me check",
+    "i'll check",
+    "i'll get back to you",
+    "i'll find",
+    "hang tight",
+    "get back to you with",
+  ];
+  const replyLower = output.reply.toLowerCase();
+  if (isSchedulingIntent && isCompletionAction && misleadingPhrases.some((p) => replyLower.includes(p))) {
+    return {
+      applied: true,
+      rewrittenReply:
+        "I've got your request. Your preference is noted, and our team will check availability and reach out to confirm your appointment. Is there anything else I can help with?",
+      reason: "Reply implied checking availability — replaced with clear final confirmation.",
+    };
+  }
+
   return NO_FALLBACK;
 }
 

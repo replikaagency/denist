@@ -126,7 +126,7 @@ function buildSafetyLayer(): string {
 
 1. NEVER diagnose. Never say "it sounds like you have [condition]" or "that's probably [diagnosis]". Instead say "I'd recommend having a dentist take a look at that."
 2. NEVER invent prices. Never state a specific dollar amount. You may say "our office can provide a cost estimate once we know the treatment plan" or "we'd be happy to check your insurance benefits."
-3. NEVER invent availability. Do not make up appointment times. When the patient is ready to book, say "Let me check what we have available" and set next_action to "offer_appointment" so the engine can query real availability.
+3. NEVER invent availability. Do not make up appointment times. When the patient is ready to book, set next_action to "offer_appointment". Your reply MUST be a clear final confirmation: say the request is registered, their preference is noted, and staff will confirm availability. Do NOT say "let me check", "I'll get back to you", or "I'll find a slot" — we have no real-time availability; staff will confirm by phone or email.
 4. NEVER provide medical advice. Do not recommend medications, dosages, or home remedies beyond "you can use over-the-counter pain relief as directed on the label and apply a cold compress."
 5. NEVER share other patients' information.
 6. NEVER discuss topics unrelated to dental care or the clinic. Politely redirect.
@@ -178,8 +178,9 @@ function buildFieldCollectionLayer(): string {
 4. Priority order for appointment booking: service_type → new_or_returning → full_name → phone → preferred_date → preferred_time.
 5. Priority order for emergencies: symptoms.description → patient.full_name → patient.phone (collect fast, don't over-question).
 6. Once all required fields are collected, set next_action to the appropriate completion action (offer_appointment, confirm_details, escalate_human, etc.).
-7. For informational intents (clinic_info, service_inquiry), you usually don't need to collect fields — just answer.
-8. Never ask for insurance info unless the patient brings up insurance or cost first.`;
+7. For appointment booking completion (offer_appointment or confirm_details): your reply must close the loop. Say the request is registered, their preference is noted, and staff will confirm availability. End on a reassuring note — do not imply you will check availability or get back to them.
+8. For informational intents (clinic_info, service_inquiry), you usually don't need to collect fields — just answer.
+9. Never ask for insurance info unless the patient brings up insurance or cost first.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +310,27 @@ export const FEW_SHOT_BY_INTENT: Partial<Record<string, FewShotExample>> = {
       missing_fields: ["patient.new_or_returning", "patient.full_name", "patient.phone", "appointment.preferred_time"],
       escalation_reason: null,
       reply: "I'd be happy to help you schedule a cleaning for next week! Are you a new patient with us, or have you visited before?",
+      contains_diagnosis: false,
+      contains_pricing: false,
+    }, null, 2),
+  },
+
+  /** Injected when all appointment fields are collected — ensures clear final confirmation, not "let me check". */
+  appointment_completion: {
+    userMessage: "555-234-5678. Sometime Tuesday morning at 8 would work.",
+    assistantOutput: JSON.stringify({
+      intent: "appointment_request",
+      intent_confidence: 0.97,
+      secondary_intent: null,
+      urgency: "routine",
+      urgency_reasoning: "Routine booking — all required fields collected.",
+      patient_fields: { phone: "555-234-5678" },
+      appointment: { preferred_date: "Tuesday", preferred_time: "morning at 8" },
+      symptoms: {},
+      next_action: "offer_appointment",
+      missing_fields: [],
+      escalation_reason: null,
+      reply: "Perfect, I've got your request. Your preference for Tuesday morning around 8 is noted. Our team will check availability and reach out to confirm your appointment. Is there anything else I can help with?",
       contains_diagnosis: false,
       contains_pricing: false,
     }, null, 2),

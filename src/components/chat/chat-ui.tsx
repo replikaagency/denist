@@ -29,6 +29,7 @@ export function ChatUI() {
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [initializing, setInitializing] = useState(true);
   // True once the conversation has been handed off to a human agent.
@@ -68,6 +69,21 @@ export function ChatUI() {
       }
 
       setConversationId(json.data.conversation.id);
+
+      // Fetch JWT for Realtime RLS (session_token-scoped). If 503, realtime is disabled.
+      try {
+        const tokenRes = await fetch("/api/chat/realtime-token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_token: token }),
+        });
+        const tokenJson = await tokenRes.json();
+        if (tokenJson.ok) {
+          setRealtimeToken(tokenJson.data.token);
+        }
+      } catch {
+        // Realtime disabled; chat still works via HTTP
+      }
 
       const conv = json.data.conversation as { ai_enabled: boolean; status: string };
       if (!conv.ai_enabled || conv.status === 'waiting_human' || conv.status === 'human_active') {
@@ -128,6 +144,7 @@ export function ChatUI() {
     setIsHandedOff(false);
     setError(null);
     setConversationId(null);
+    setRealtimeToken(null);
     seenIdsRef.current = new Set();
     // Generate a new session token so the API creates a brand-new conversation.
     const newToken = crypto.randomUUID();
@@ -154,7 +171,7 @@ export function ChatUI() {
         timestamp: getTime(),
       },
     ]);
-  });
+  }, realtimeToken);
 
   async function sendMessage() {
     const trimmed = input.trim();

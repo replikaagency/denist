@@ -39,6 +39,18 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       return errorResponse('VALIDATION_ERROR', 'Invalid request body', 400, parsed.error.issues);
     }
 
+    // Require confirmed_datetime when transitioning to confirmed
+    if (parsed.data.status === 'confirmed') {
+      const dt = parsed.data.confirmed_datetime;
+      if (!dt || typeof dt !== 'string' || dt.trim() === '') {
+        return errorResponse(
+          'VALIDATION_ERROR',
+          'confirmed_datetime is required when status is confirmed',
+          400,
+        );
+      }
+    }
+
     const appt = await updateAppointmentRequest(id, parsed.data);
 
     // Cascade status changes to the lead

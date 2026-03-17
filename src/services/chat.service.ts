@@ -2,6 +2,7 @@ import { insertMessage, getRecentMessages, type MessageInsertInput } from '@/lib
 import { updateConversation, getConversationById } from '@/lib/db/conversations';
 import { callLLM, type ChatMessage } from '@/lib/ai/completion';
 import { buildSystemPrompt, getClinicConfig, FEW_SHOT_BY_INTENT } from '@/lib/conversation/prompts';
+import { getMissingFields } from '@/lib/conversation/fields';
 import { processTurn, type TurnResult } from '@/lib/conversation/engine';
 import { AppError } from '@/lib/errors';
 import { LIMITS } from '@/config/constants';
@@ -87,7 +88,19 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
 
   // 9. Inject few-shot example if available for current intent
   if (state.current_intent) {
-    const example = FEW_SHOT_BY_INTENT[state.current_intent];
+    const isSchedulingIntent =
+      state.current_intent === 'appointment_request' || state.current_intent === 'appointment_reschedule';
+    const filledFields = {
+      patient: state.patient,
+      appointment: state.appointment,
+      symptoms: state.symptoms,
+    };
+    const missing = getMissingFields(state.current_intent, filledFields);
+    const useCompletionExample = isSchedulingIntent && missing.length === 0;
+
+    const example = useCompletionExample
+      ? FEW_SHOT_BY_INTENT['appointment_completion']
+      : FEW_SHOT_BY_INTENT[state.current_intent];
     if (example) {
       llmMessages.unshift(
         { role: 'user', content: example.userMessage },

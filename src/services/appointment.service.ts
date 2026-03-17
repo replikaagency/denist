@@ -22,16 +22,17 @@ const VALID_TIME_OF_DAY = new Set<string>(['morning', 'afternoon', 'evening', 'a
  * Strategy (in priority order):
  *   1. Exact match against the four valid values (case-insensitive).
  *   2. Keyword / clock-time heuristics.
- *   3. null — the invalid value is dropped rather than stored.
+ *   3. Bare hour or "a las X" / "at X" — 6–11 → morning, 12–16 → afternoon, 17–23 → evening.
+ *   4. null — the invalid value is dropped rather than stored.
  *
  * Examples that map:
- *   "early morning" → 'morning'   "9am" → 'morning'
- *   "around noon"   → 'afternoon' "2pm" → 'afternoon'
- *   "after work"    → 'evening'   "6pm" → 'evening'
+ *   "early morning" → 'morning'   "9am" → 'morning'   "a las 8" → 'morning'
+ *   "around noon"   → 'afternoon' "2pm" → 'afternoon' "las 14" → 'afternoon'
+ *   "after work"    → 'evening'   "6pm" → 'evening'   "17:30" → 'evening'
  *   "anytime"       → 'any'       "flexible" → 'any'
  *
  * Examples that return null (unparseable):
- *   "Tuesday", "right after lunch", "17:30"
+ *   "Tuesday", "right after lunch"
  */
 function normalizeTimeOfDay(raw: string | null | undefined): TimeOfDay | null {
   if (!raw) return null;
@@ -62,6 +63,26 @@ function normalizeTimeOfDay(raw: string | null | undefined): TimeOfDay | null {
 
   // Any/flexible
   if (s.includes('any') || s.includes('flexible') || s.includes('anytime')) return 'any';
+
+  // Bare hour or "a las X" / "las X" / "at X" — Spanish/English
+  const hourMatch = s.match(/\b(?:a las |las |at )?(\d{1,2})(?:\s*:\s*\d{2})?(?:\s*(?:am|pm|de la mañana|de la tarde|de la noche))?\b/);
+  if (hourMatch) {
+    const hour = parseInt(hourMatch[1], 10);
+    const isPm = /\b(pm|tarde|noche)\b/.test(s);
+    if (hour >= 6 && hour <= 11 && !isPm) return 'morning';
+    if (hour >= 12 && hour <= 16) return 'afternoon';
+    if (hour >= 17 && hour <= 23) return 'evening';
+    if ((hour >= 5 && hour <= 11 && isPm) || hour === 0) return 'evening';
+  }
+
+  // 24h format HH or HH:mm
+  const h24Match = s.match(/\b(\d{1,2})\s*:\s*(\d{2})\b/);
+  if (h24Match) {
+    const hour = parseInt(h24Match[1], 10);
+    if (hour >= 6 && hour <= 11) return 'morning';
+    if (hour >= 12 && hour <= 16) return 'afternoon';
+    if (hour >= 17 && hour <= 23) return 'evening';
+  }
 
   return null;
 }
@@ -169,6 +190,37 @@ interface ResolvedFields {
   preferred_date: string | null;
   preferred_time_of_day: TimeOfDay | null;
   notes: string | null;
+  /** Fallback text when time/date could not be normalized; used for notes merge on enrich */
+  notesFallback: string | null;
+}
+
+const MAX_RAW_PREFERENCE_LENGTH = 100;
+
+/** Fallback text for time/date that could not be normalized. Preserved in notes. */
+function getNotesFallback(appointment: Partial<AppointmentDetails>): string | null {
+  const parts: string[] = [];
+  const rawTime = appointment.preferred_time?.trim();
+  if (rawTime && !normalizeTimeOfDay(rawTime)) {
+    parts.push(`Patient preferred time: ${rawTime.slice(0, MAX_RAW_PREFERENCE_LENGTH)}`);
+  }
+  const rawDate = appointment.preferred_date?.trim();
+  if (rawDate && !normalizePreferredDate(rawDate)) {
+    parts.push(`Patient preferred date: ${rawDate.slice(0, MAX_RAW_PREFERENCE_LENGTH)}`);
+  }
+  return parts.length > 0 ? parts.join('; ') : null;
+}
+
+function buildNotes(appointment: Partial<AppointmentDetails>): string | null {
+  const parts: string[] = [];
+
+  if (appointment.preferred_provider?.trim()) {
+    parts.push(`Preferred provider: ${appointment.preferred_provider.trim().slice(0, MAX_RAW_PREFERENCE_LENGTH)}`);
+  }
+
+  const fallback = getNotesFallback(appointment);
+  if (fallback) parts.push(fallback);
+
+  return parts.length > 0 ? parts.join('; ') : null;
 }
 
 function resolveFields(appointment: Partial<AppointmentDetails>): ResolvedFields {
@@ -176,9 +228,8 @@ function resolveFields(appointment: Partial<AppointmentDetails>): ResolvedFields
     appointment_type: resolveAppointmentType(appointment.service_type ?? null),
     preferred_date: normalizePreferredDate(appointment.preferred_date),
     preferred_time_of_day: normalizeTimeOfDay(appointment.preferred_time),
-    notes: appointment.preferred_provider
-      ? `Preferred provider: ${appointment.preferred_provider}`
-      : null,
+    notes: buildNotes(appointment),
+    notesFallback: getNotesFallback(appointment),
   };
 }
 
@@ -207,6 +258,10 @@ function buildEnrichPatch(
   }
   if (!existing.notes && resolved.notes) {
     patch.notes = resolved.notes;
+  }
+  // Merge fallback when existing notes already has content (e.g. provider) but we have new raw time/date
+  if (existing.notes && resolved.notesFallback && !existing.notes.includes(resolved.notesFallback)) {
+    patch.notes = `${existing.notes}; ${resolved.notesFallback}`;
   }
 
   return Object.keys(patch).length > 0 ? patch : null;
@@ -254,13 +309,14 @@ export async function createRequest(input: {
     return existing;
   }
 
+  const { notesFallback: _drop, ...dbFields } = resolved;
   let request: AppointmentRequest;
   try {
     request = await createAppointmentRequest({
       contact_id: input.contactId,
       conversation_id: input.conversationId,
       lead_id: input.leadId,
-      ...resolved,
+      ...dbFields,
     });
   } catch (err) {
     // A concurrent request may have inserted between our check and this insert.

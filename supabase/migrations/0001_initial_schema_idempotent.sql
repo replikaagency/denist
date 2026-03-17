@@ -214,17 +214,11 @@ CREATE POLICY "staff_write_handoff_events" ON public.handoff_events FOR ALL TO a
 -- ---------------------------------------------------------------------------
 -- Anon RLS: patient chat realtime (messages)
 --
--- The patient chat widget subscribes to postgres_changes on `messages` as an
--- unauthenticated (anon) user. Without an anon SELECT policy, Supabase
--- Realtime silently drops all events, so staff replies never appear in the
--- patient chat without a page refresh.
---
--- A SECURITY DEFINER function checks that the message's conversation_id maps
--- to a real conversation row, without granting anon direct access to the
--- conversations table. See migration 0003 for full rationale.
+-- Anon must present a JWT with session_token claim (from POST /api/chat/realtime-token).
+-- See migration 0004 for full rationale and session_token flow.
 -- ---------------------------------------------------------------------------
 
-CREATE OR REPLACE FUNCTION public.anon_can_read_conversation(p_conversation_id uuid)
+CREATE OR REPLACE FUNCTION public.anon_owns_conversation(p_conversation_id uuid)
 RETURNS boolean
 LANGUAGE sql
 SECURITY DEFINER
@@ -233,20 +227,23 @@ SET search_path = public
 AS $$
   SELECT EXISTS (
     SELECT 1
-    FROM public.conversations
-    WHERE id = p_conversation_id
+    FROM public.conversations c
+    JOIN public.contacts ct ON ct.id = c.contact_id
+    WHERE c.id = p_conversation_id
+      AND ct.session_token = (auth.jwt() ->> 'session_token')
   );
 $$;
 
-REVOKE ALL ON FUNCTION public.anon_can_read_conversation(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.anon_can_read_conversation(uuid) TO anon;
+REVOKE ALL ON FUNCTION public.anon_owns_conversation(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.anon_owns_conversation(uuid) TO anon;
 
 DROP POLICY IF EXISTS "anon_read_messages_for_conversation" ON public.messages;
-CREATE POLICY "anon_read_messages_for_conversation"
+DROP POLICY IF EXISTS "anon_read_own_messages" ON public.messages;
+CREATE POLICY "anon_read_own_messages"
   ON public.messages
   FOR SELECT
   TO anon
-  USING (public.anon_can_read_conversation(conversation_id));
+  USING (public.anon_owns_conversation(conversation_id));
 
 -- ---------------------------------------------------------------------------
 -- Supabase Realtime — enable postgres_changes for key tables

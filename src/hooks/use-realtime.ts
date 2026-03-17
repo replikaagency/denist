@@ -74,21 +74,40 @@ export function useRealtimeTable(
 
 /**
  * Subscribe to new messages in a specific conversation.
+ *
+ * For patient chat (anon): pass `realtimeToken` from POST /api/chat/realtime-token.
+ * RLS requires the JWT to contain session_token; without it, events are dropped.
+ *
+ * For staff (authenticated): token is optional; the default anon/authenticated
+ * key is used and staff policies apply.
  */
 export function useRealtimeMessages(
   conversationId: string | null,
   onNewMessage: (message: Record<string, unknown>) => void,
+  realtimeToken?: string | null,
 ) {
+  const callbackRef = useRef(onNewMessage);
+  callbackRef.current = onNewMessage;
+
+  // Set custom JWT for Realtime before subscribing (patient chat flow).
+  // Must run before the subscription effect.
+  useEffect(() => {
+    if (!realtimeToken) return;
+    const supabase = createSupabaseBrowserClient();
+    supabase.realtime.setAuth(realtimeToken);
+  }, [realtimeToken]);
+
   useRealtimeTable(
     'messages',
     (payload) => {
       if (payload.eventType === 'INSERT') {
-        onNewMessage(payload.new);
+        callbackRef.current(payload.new);
       }
     },
     {
       filter: conversationId ? `conversation_id=eq.${conversationId}` : undefined,
-      enabled: !!conversationId,
+      // Patient: require token for RLS. Staff: token not passed (uses auth session).
+      enabled: !!conversationId && (realtimeToken === undefined ? true : !!realtimeToken),
     },
   );
 }

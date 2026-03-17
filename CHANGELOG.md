@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.8.8] — 2026-03-17
+
+### Fixed
+
+- **Patient realtime RLS tightened to session_token** (`supabase/migrations/0004_rls_patient_realtime.sql`, `app/api/chat/realtime-token/route.ts`, `hooks/use-realtime.ts`, `components/chat/chat-ui.tsx`): The anon SELECT policy on `messages` previously only checked that the conversation UUID existed — any anon who knew a valid UUID could read those messages. Now:
+  1. Anon must present a JWT with `session_token` claim (from `POST /api/chat/realtime-token`).
+  2. RLS policy `anon_read_own_messages` uses `anon_owns_conversation()` to verify the JWT's `session_token` matches the contact linked to the conversation.
+  3. `messages` and `conversations` are idempotently added to `supabase_realtime` publication (fixes projects that never ran the idempotent schema).
+  4. Chat widget fetches the realtime token after `POST /api/chat/start` and passes it to `useRealtimeMessages`; `supabase.realtime.setAuth(token)` is called before subscribing.
+  5. Requires `SUPABASE_JWT_SECRET` in env (Project Settings > API > JWT Secret). If missing, realtime-token returns 503 and patient chat works without live updates.
+
+## [0.8.7] — 2026-03-17
+
+### Fixed
+
+- **Appointment confirmation response flow** (`lib/conversation/prompts.ts`, `lib/conversation/engine.ts`, `services/chat.service.ts`): After the patient confirmed a preference (e.g. "a las 8"), the AI would say "let me check" or "I'll get back to you" and the conversation felt incomplete. Now: (1) prompt instructs a clear final confirmation (request registered, preference noted, staff will confirm); (2) few-shot `appointment_completion` example injected when all fields collected; (3) engine fallback rewrites replies that still contain misleading phrases.
+
+## [0.8.6] — 2026-03-17
+
+### Fixed
+
+- **Patient scheduling preferences no longer silently lost** (`services/appointment.service.ts`): Time phrases like "a las 8", "at 8", "8:00", and "17:30" that could not be normalized to `preferred_time_of_day` were dropped. Now: (1) `normalizeTimeOfDay` recognizes bare hours and "a las X" / "at X" patterns (6–11 → morning, 12–16 → afternoon, 17–23 → evening) and 24h format; (2) when normalization still fails, the raw text is preserved in `notes` as "Patient preferred time: …" and "Patient preferred date: …"; (3) enrichment merges new fallback text into existing notes instead of overwriting.
+
+## [0.8.5] — 2026-03-17
+
+### Fixed
+
+- **Appointment request cannot be confirmed without `confirmed_datetime`** (`app/api/appointment-requests/[id]/route.ts`, `app/dashboard/appointments/appointments-list.tsx`): Staff could previously click "Confirm" and set `status = confirmed` without providing the actual booked slot, leaving `confirmed_datetime` null. The API now rejects `status: confirmed` when `confirmed_datetime` is missing. The dashboard Confirm button opens a dialog that collects the booked date/time before confirming.
+
 ## [0.8.4] — 2026-03-17
 
 ### Fixed
