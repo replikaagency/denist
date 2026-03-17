@@ -251,6 +251,13 @@ export function mergeState(
 // ---------------------------------------------------------------------------
 
 /**
+ * Conversations with this many or more corrections are flagged for review.
+ * Exported so consumers (e.g. a debug route) can display the threshold
+ * alongside the metric without hardcoding it elsewhere.
+ */
+export const CORRECTION_ALERT_THRESHOLD = 3;
+
+/**
  * Explicit ownership sets — the single source of truth for routing a
  * CorrectionField to its sub-object in ConversationState.
  * Together they must cover all values of CorrectionFieldEnum exactly.
@@ -373,16 +380,25 @@ function applyValidatedCorrections(
 
   if (newLogEntries.length === 0) return state;
 
+  // Build the final log once so derived metrics are computed from the same
+  // array reference. correction_log is expected to remain small (single-digit
+  // entries per conversation); metrics are derived at write time intentionally
+  // so any reader gets them for free without recomputation.
+  const finalLog = [
+    ...(state.metadata?.correction_log ?? []),
+    ...newLogEntries,
+  ];
+
   return {
     ...state,
     appointment,
     symptoms,
     metadata: {
       ...state.metadata,
-      correction_log: [
-        ...(state.metadata?.correction_log ?? []),
-        ...newLogEntries,
-      ],
+      correction_log:       finalLog,
+      correction_count:     finalLog.length,
+      last_correction_at:   finalLog[finalLog.length - 1].timestamp,
+      too_many_corrections: finalLog.length >= CORRECTION_ALERT_THRESHOLD,
     },
   };
 }

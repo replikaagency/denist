@@ -206,14 +206,27 @@ export const ConversationStateSchema = z.object({
   // Synced from DB in chat.service before processTurn so validateFlowAction
   // can block redundant offer_appointment actions without a DB call.
   appointment_request_open: z.boolean().default(false),
-  // Audit and operational metadata. Uses .passthrough() so unknown keys added
-  // in future are not silently stripped on parse/re-save.
+  // Audit and operational metadata. Uses .loose() so unknown keys present in
+  // existing DB records are preserved on parse/re-save without a migration.
+  // correction_log is expected to remain small (single-digit entries per
+  // conversation). Derived metrics (correction_count, last_correction_at,
+  // too_many_corrections) are computed at write time in applyValidatedCorrections
+  // so they are always consistent with correction_log and available to any
+  // reader without recomputation.
   metadata: z
     .object({
-      correction_log: z.array(CorrectionLogEntrySchema).default([]),
+      correction_log:       z.array(CorrectionLogEntrySchema).default([]),
+      correction_count:     z.number().default(0),
+      last_correction_at:   z.string().nullable().default(null),
+      too_many_corrections: z.boolean().default(false),
     })
     .loose()
-    .default({ correction_log: [] }),
+    .default({
+      correction_log:       [],
+      correction_count:     0,
+      last_correction_at:   null,
+      too_many_corrections: false,
+    }),
 });
 
 export type ConversationState = z.infer<typeof ConversationStateSchema>;
@@ -258,6 +271,6 @@ export function createInitialState(conversationId: string): ConversationState {
     completed: false,
     offer_appointment_pending: false,
     appointment_request_open: false,
-    metadata: { correction_log: [] },
+    metadata: { correction_log: [], correction_count: 0, last_correction_at: null, too_many_corrections: false },
   };
 }
