@@ -8,6 +8,7 @@ import { successResponse, errorResponse, handleRouteError } from '@/lib/response
 import { requireStaffAuth } from '@/lib/auth';
 import { getConversationById, updateConversation } from '@/lib/db/conversations';
 import { insertMessage } from '@/lib/db/messages';
+import { getOpenHandoffForConversation, assignHandoffEvent } from '@/lib/db/handoffs';
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -40,6 +41,10 @@ export async function POST(_request: NextRequest, { params }: RouteParams) {
         staff_email: auth.user.email,
       },
     });
+
+    // Assign the staff member to the open handoff event (if one exists)
+    const openHandoff = await getOpenHandoffForConversation(id);
+    if (openHandoff) await assignHandoffEvent(openHandoff.id, auth.user.id);
 
     return successResponse({ conversation: updated });
   } catch (err) {

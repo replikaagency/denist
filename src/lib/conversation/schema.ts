@@ -123,6 +123,11 @@ export const ConversationStateSchema = z.object({
   escalation_reason:  z.string().nullable(),
   consecutive_low_confidence: z.number().describe("How many turns in a row had confidence < threshold"),
   completed:          z.boolean(),
+  // Set to true when the LLM fires `offer_appointment` but the patient is not
+  // yet identified. Cleared once the appointment request row is successfully
+  // created on a later turn. Uses .default(false) so existing DB records that
+  // predate this field parse correctly without migration.
+  offer_appointment_pending: z.boolean().default(false),
 });
 
 export type ConversationState = z.infer<typeof ConversationStateSchema>;
@@ -165,5 +170,6 @@ export function createInitialState(conversationId: string): ConversationState {
     escalation_reason: null,
     consecutive_low_confidence: 0,
     completed: false,
+    offer_appointment_pending: false,
   };
 }

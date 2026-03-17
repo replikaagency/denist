@@ -42,7 +42,7 @@ export async function callLLM(
         messages: apiMessages,
         response_format: { type: 'json_object' },
         temperature: 0.4,
-        max_tokens: 800,
+        max_tokens: 1200,
       });
 
       const choice = response.choices[0];

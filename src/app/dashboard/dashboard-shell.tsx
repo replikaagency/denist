@@ -27,9 +27,9 @@ export function DashboardShell({
         <div className="flex h-14 items-center gap-4 px-6">
           <div className="flex items-center gap-2">
             <div className="flex size-7 items-center justify-center rounded-md bg-primary text-[11px] font-bold text-primary-foreground">
-              DR
+              ✦
             </div>
-            <span className="text-sm font-semibold tracking-tight">Staff Dashboard</span>
+            <span className="text-sm font-semibold tracking-tight">Reception</span>
           </div>
 
           <nav className="ml-6 flex items-center gap-1">

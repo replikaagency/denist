@@ -31,8 +31,6 @@ export function useRealtimeTable(
 
     const channelName = `realtime-${table}-${Date.now()}`;
 
-    const channelConfig: Parameters<typeof supabase.channel>[1] = undefined;
-
     channel = supabase.channel(channelName);
 
     const subscribeConfig: {
@@ -62,7 +60,11 @@ export function useRealtimeTable(
           });
         },
       )
-      .subscribe();
+      .subscribe((status, err) => {
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.error(`[realtime] ${channelName} — ${status}`, err ?? '');
+        }
+      });
 
     return () => {
       supabase.removeChannel(channel);

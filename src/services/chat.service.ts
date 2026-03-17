@@ -1,7 +1,7 @@
 import { insertMessage, getRecentMessages, type MessageInsertInput } from '@/lib/db/messages';
 import { updateConversation, getConversationById } from '@/lib/db/conversations';
 import { callLLM, type ChatMessage } from '@/lib/ai/completion';
-import { buildSystemPrompt, DEFAULT_CLINIC_CONFIG, FEW_SHOT_BY_INTENT } from '@/lib/conversation/prompts';
+import { buildSystemPrompt, getClinicConfig, FEW_SHOT_BY_INTENT } from '@/lib/conversation/prompts';
 import { processTurn, type TurnResult } from '@/lib/conversation/engine';
 import { AppError } from '@/lib/errors';
 import { LIMITS } from '@/config/constants';
@@ -79,7 +79,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   const state = await loadState(conversation_id);
 
   // 7. Build system prompt
-  const systemPrompt = buildSystemPrompt(DEFAULT_CLINIC_CONFIG, state);
+  const systemPrompt = buildSystemPrompt(getClinicConfig(), state);
 
   // 8. Build message history for LLM
   const history = await getRecentMessages(conversation_id, LIMITS.CONTEXT_WINDOW);
@@ -123,7 +123,43 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     await updateConversation(conversation_id, { lead_id: lead.id });
   }
 
-  if (turnResult.rawOutput.next_action === 'offer_appointment' && isIdentified) {
+  // Appointment request creation — three independent triggers so the row is
+  // never silently dropped regardless of which next_action the LLM chooses:
+  //
+  //   1. `offer_appointment`  — canonical path: LLM is ready to offer slots.
+  //   2. `confirm_details`    — LLM chose to confirm before offering; the
+  //                             system prompt explicitly allows this. Create
+  //                             the row now so staff see the intent even if
+  //                             the patient drops off between these turns.
+  //   3. `state.completed`    — engine detected all required fields are filled
+  //                             but the LLM returned the wrong next_action
+  //                             (defensive backstop for LLM errors).
+  //
+  // Guarded by isSchedulingIntent for triggers 2 & 3 so that `confirm_details`
+  // on an insurance or billing turn doesn't produce a spurious appointment row.
+  //
+  // isIdentified (name + phone/email in the contact record) is required for
+  // all paths — if the patient hasn't identified themselves yet, the request
+  // is deferred to the next turn where enrichContact will have filled those in.
+  //
+  // createRequest is idempotent (app-level check + DB partial unique index),
+  // so it's safe to call on multiple consecutive triggering turns.
+  const isSchedulingIntent =
+    turnResult.state.current_intent === 'appointment_request' ||
+    turnResult.state.current_intent === 'appointment_reschedule';
+
+  const appointmentActionFired =
+    turnResult.rawOutput.next_action === 'offer_appointment' ||
+    (turnResult.rawOutput.next_action === 'confirm_details' && isSchedulingIntent);
+
+  const engineCompletedAppointment = turnResult.state.completed && isSchedulingIntent;
+
+  // Deferred trigger: a prior turn fired `offer_appointment` but the patient
+  // wasn't identified yet. The flag is now set in state; if they've since
+  // provided their details, create the request now.
+  const deferredAppointment = turnResult.state.offer_appointment_pending && isIdentified;
+
+  if ((appointmentActionFired || engineCompletedAppointment || deferredAppointment) && isIdentified) {
     const lead = await ensureLead(contact.id);
     await createRequest({
       contactId: contact.id,
@@ -131,6 +167,10 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       leadId: lead.id,
       appointment: turnResult.state.appointment,
     });
+    turnResult.state.offer_appointment_pending = false;
+  } else if (turnResult.rawOutput.next_action === 'offer_appointment' && !isIdentified) {
+    // Patient not yet identified — remember the intent for the next turn.
+    turnResult.state.offer_appointment_pending = true;
   }
 
   if (turnResult.escalation.shouldEscalate) {
@@ -142,7 +182,9 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     });
   }
 
-  if (turnResult.rawOutput.next_action === 'end_conversation') {
+  // Only resolve if there was no escalation — escalation takes precedence
+  // and a concurrent `end_conversation` action must not clobber waiting_human.
+  if (!turnResult.escalation.shouldEscalate && turnResult.rawOutput.next_action === 'end_conversation') {
     await transitionStatus(conversation_id, 'resolved');
   }
 

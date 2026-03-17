@@ -23,13 +23,44 @@ export default async function DashboardPage({
 
   const { data, count } = await query;
 
+  // Fetch last visible message (patient/ai/human) per conversation for the preview
+  const conversationIds = (data ?? []).map((c) => (c as { id: string }).id);
+  const lastMessageMap: Record<string, { content: string; role: string }> = {};
+
+  if (conversationIds.length > 0) {
+    const { data: msgRows } = await supabase
+      .from('messages')
+      .select('conversation_id, content, role, created_at')
+      .in('conversation_id', conversationIds)
+      .in('role', ['patient', 'ai', 'human'])
+      .order('created_at', { ascending: false });
+
+    for (const row of msgRows ?? []) {
+      const r = row as { conversation_id: string; content: string; role: string };
+      if (!lastMessageMap[r.conversation_id]) {
+        lastMessageMap[r.conversation_id] = { content: r.content, role: r.role };
+      }
+    }
+  }
+
+  // Merge last message preview into conversation rows
+  const conversationsWithPreview = (data ?? []).map((conv) => {
+    const c = conv as { id: string };
+    const preview = lastMessageMap[c.id] ?? null;
+    return {
+      ...conv,
+      last_message_preview: preview?.content ?? null,
+      last_message_role: preview?.role ?? null,
+    };
+  });
+
   // Get counts by status for the filter tabs
   const { data: statusCounts } = await supabase
     .from('conversations')
     .select('status')
-    .then(({ data }) => {
+    .then(({ data: rows }) => {
       const counts: Record<string, number> = {};
-      for (const row of data ?? []) {
+      for (const row of rows ?? []) {
         const s = (row as { status: string }).status;
         counts[s] = (counts[s] ?? 0) + 1;
       }
@@ -46,7 +77,7 @@ export default async function DashboardPage({
       </div>
 
       <ConversationsList
-        conversations={data ?? []}
+        conversations={conversationsWithPreview}
         total={count ?? 0}
         currentStatus={statusFilter}
         statusCounts={statusCounts ?? {}}

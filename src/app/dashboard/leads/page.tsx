@@ -12,6 +12,20 @@ const STATUS_COLORS: Record<string, string> = {
   disqualified: 'bg-gray-100 text-gray-600',
 };
 
+const STATUS_LABELS: Record<string, string> = {
+  new: 'New',
+  contacted: 'Contacted',
+  qualified: 'Qualified',
+  appointment_requested: 'Appt. Requested',
+  booked: 'Booked',
+  lost: 'Lost',
+  disqualified: 'Disqualified',
+};
+
+function toTitleCase(str: string) {
+  return str.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString([], {
     month: 'short',
@@ -48,7 +62,7 @@ export default async function LeadsPage() {
       <div className="mb-6">
         <h1 className="text-xl font-semibold tracking-tight">Leads</h1>
         <p className="text-sm text-muted-foreground">
-          Track patient leads through the sales funnel.
+          Prospective patients captured through the AI chat.
         </p>
       </div>
 
@@ -76,7 +90,7 @@ export default async function LeadsPage() {
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium">{name}</span>
                         <Badge variant="outline" className={`text-[10px] ${STATUS_COLORS[lead.status] ?? ''}`}>
-                          {lead.status.replace('_', ' ')}
+                          {STATUS_LABELS[lead.status] ?? toTitleCase(lead.status)}
                         </Badge>
                       </div>
                       <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">

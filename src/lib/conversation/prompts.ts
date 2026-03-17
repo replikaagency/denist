@@ -74,6 +74,33 @@ export const DEFAULT_CLINIC_CONFIG: ClinicConfig = {
   website: "https://brightsmile.example.com",
 };
 
+/**
+ * Returns the clinic config, merging environment variable overrides over the
+ * DEFAULT_CLINIC_CONFIG fallbacks. Set NEXT_PUBLIC_CLINIC_NAME (and the other
+ * CLINIC_* vars) in your environment to customise without code changes.
+ *
+ * CLINIC_ACCEPTED_INSURANCE and CLINIC_SERVICES accept comma-separated lists.
+ */
+export function getClinicConfig(): ClinicConfig {
+  const e = process.env;
+  return {
+    clinic_name:        e.NEXT_PUBLIC_CLINIC_NAME      ?? DEFAULT_CLINIC_CONFIG.clinic_name,
+    address:            e.CLINIC_ADDRESS               ?? DEFAULT_CLINIC_CONFIG.address,
+    phone:              e.CLINIC_PHONE                 ?? DEFAULT_CLINIC_CONFIG.phone,
+    hours:              e.CLINIC_HOURS                 ?? DEFAULT_CLINIC_CONFIG.hours,
+    emergency_phone:    e.CLINIC_EMERGENCY_PHONE       ?? DEFAULT_CLINIC_CONFIG.emergency_phone,
+    website:            e.CLINIC_WEBSITE               ?? DEFAULT_CLINIC_CONFIG.website,
+    accepted_insurance: e.CLINIC_ACCEPTED_INSURANCE
+      ? e.CLINIC_ACCEPTED_INSURANCE.split(',').map(s => s.trim())
+      : DEFAULT_CLINIC_CONFIG.accepted_insurance,
+    services: e.CLINIC_SERVICES
+      ? e.CLINIC_SERVICES.split(',').map(s => s.trim())
+      : DEFAULT_CLINIC_CONFIG.services,
+    // Providers are complex objects; configure them directly in DEFAULT_CLINIC_CONFIG.
+    providers: DEFAULT_CLINIC_CONFIG.providers,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Layer 1 — Identity & Persona
 // ---------------------------------------------------------------------------

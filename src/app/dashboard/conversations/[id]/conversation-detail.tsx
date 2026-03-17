@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { ArrowLeft, Send, UserCheck, CheckCircle } from 'lucide-react';
-import { useRealtimeMessages } from '@/hooks/use-realtime';
+import { useRealtimeMessages, useRealtimeTable } from '@/hooks/use-realtime';
 
 const STATUS_COLORS: Record<string, string> = {
   active: 'bg-emerald-100 text-emerald-800',
@@ -20,17 +20,17 @@ const STATUS_COLORS: Record<string, string> = {
 
 const STATUS_LABELS: Record<string, string> = {
   active: 'AI Active',
-  waiting_human: 'Waiting for Staff',
+  waiting_human: 'Needs Attention',
   human_active: 'Staff Active',
   resolved: 'Resolved',
   abandoned: 'Abandoned',
 };
 
-const ROLE_STYLES: Record<string, { label: string; bg: string; align: string }> = {
-  patient: { label: 'Patient', bg: 'bg-blue-50 border-blue-200', align: 'ml-auto' },
-  ai: { label: 'AI', bg: 'bg-muted border-border', align: 'mr-auto' },
-  human: { label: 'Staff', bg: 'bg-emerald-50 border-emerald-200', align: 'mr-auto' },
-  system: { label: 'System', bg: 'bg-yellow-50 border-yellow-200', align: 'mx-auto' },
+const ROLE_STYLES: Record<string, { label: string; bg: string; container: string }> = {
+  patient: { label: 'Patient', bg: 'bg-blue-50 border-blue-200', container: 'justify-end' },
+  ai: { label: 'AI', bg: 'bg-muted border-border', container: 'justify-start' },
+  human: { label: 'Staff', bg: 'bg-emerald-50 border-emerald-200', container: 'justify-start' },
+  system: { label: 'System', bg: 'bg-yellow-50 border-yellow-200', container: 'justify-center' },
 };
 
 function formatTime(iso: string) {
@@ -71,6 +71,21 @@ export function ConversationDetail({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Realtime: sync conversation status when another staff member takes over /
+  // resolves the conversation so action buttons stay accurate.
+  useRealtimeTable(
+    'conversations',
+    (payload) => {
+      if (payload.eventType === 'UPDATE') {
+        const newStatus = payload.new.status as string | undefined;
+        if (newStatus && newStatus !== status) {
+          setStatus(newStatus);
+        }
+      }
+    },
+    { filter: `id=eq.${conversation.id as string}` },
+  );
+
   // Realtime: listen for new messages in this conversation
   const seenIdsRef = useRef(new Set(initialMessages.map((m) => m.id as string)));
   useRealtimeMessages(
@@ -107,6 +122,12 @@ export function ConversationDetail({
     });
     if (res.ok) {
       setStatus('resolved');
+      const json = await res.json();
+      if (json.ok && json.data?.systemMessage) {
+        const sm = json.data.systemMessage as Record<string, unknown>;
+        seenIdsRef.current.add(sm.id as string);
+        setMessages((prev) => [...prev, sm]);
+      }
       router.refresh();
     }
   }
@@ -124,8 +145,19 @@ export function ConversationDetail({
 
       if (res.ok) {
         const json = await res.json();
-        if (json.ok && json.data?.message) {
-          setMessages((prev) => [...prev, json.data.message]);
+        if (json.ok) {
+          // On auto-claim the server returns a system message before the staff
+          // reply. Add it first so the join notification appears in the correct
+          // chronological position (before the first staff message).
+          if (json.data?.systemMessage) {
+            const sm = json.data.systemMessage as Record<string, unknown>;
+            seenIdsRef.current.add(sm.id as string);
+            setMessages((prev) => [...prev, sm]);
+          }
+          if (json.data?.message) {
+            seenIdsRef.current.add(json.data.message.id as string);
+            setMessages((prev) => [...prev, json.data.message]);
+          }
         }
         setReplyText('');
         if (status === 'waiting_human') {
@@ -218,7 +250,7 @@ export function ConversationDetail({
         <Card className="border-amber-200 bg-amber-50">
           <CardContent className="px-5 py-3">
             <div className="text-sm">
-              <span className="font-medium text-amber-800">Handoff: </span>
+              <span className="font-medium text-amber-800">Escalation reason: </span>
               <span className="text-amber-700">
                 {handoff.reason as string}
                 {handoff.notes ? ` — ${handoff.notes}` : ''}
@@ -237,7 +269,7 @@ export function ConversationDetail({
               const style = ROLE_STYLES[role] ?? ROLE_STYLES.system;
 
               return (
-                <div key={msg.id as string} className={`flex ${role === 'patient' ? 'justify-end' : 'justify-start'}`}>
+                <div key={msg.id as string} className={`flex ${style.container}`}>
                   <div
                     className={`max-w-[75%] rounded-lg border px-3 py-2 ${style.bg}`}
                   >
@@ -285,7 +317,10 @@ export function ConversationDetail({
               </Button>
             </div>
             <p className="mt-1.5 text-[11px] text-muted-foreground">
-              Press Cmd+Enter to send
+              ⌘ Cmd / Ctrl + Enter to send
+              {canTakeover && (
+                <span className="ml-2 text-amber-600">· Sending a reply will claim this conversation.</span>
+              )}
             </p>
           </CardContent>
         </Card>

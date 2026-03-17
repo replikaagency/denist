@@ -5,5 +5,7 @@ export const LIMITS = {
   MAX_TURNS_BEFORE_ESCALATION: 20,
 } as const;
 
-export const AI_GREETING =
-  "Hi! Welcome to Bright Smile Dental. I'm here to help you with appointments, questions about our services, insurance, or anything else. How can I help you today?";
+export function getAIGreeting(): string {
+  const name = process.env.NEXT_PUBLIC_CLINIC_NAME ?? "our dental office";
+  return `Hi! Welcome to ${name}. I'm here to help you with appointments, questions about our services, insurance, or anything else. How can I help you today?`;
+}

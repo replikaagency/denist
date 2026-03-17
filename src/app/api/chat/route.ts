@@ -2,7 +2,7 @@ import { type NextRequest } from 'next/server';
 import { successResponse, errorResponse, handleRouteError } from '@/lib/response';
 import { InboundMessageSchema } from '@/lib/schemas/message';
 import { processChatMessage } from '@/services/chat.service';
-import { checkRateLimit } from '@/lib/rate-limit';
+import { checkRateLimit, getClientIp } from '@/lib/rate-limit';
 import { LIMITS } from '@/config/constants';
 
 export async function POST(request: NextRequest) {
@@ -13,7 +13,12 @@ export async function POST(request: NextRequest) {
       return errorResponse('VALIDATION_ERROR', 'Invalid request body', 400, parsed.error.issues);
     }
 
-    // Rate limit by session token
+    // Rate limit by IP (broad) and by session token (per-user)
+    const ip = getClientIp(request);
+    const ipLimit = checkRateLimit(`chat-ip:${ip}`, LIMITS.MAX_MESSAGES_PER_MINUTE * 5, 60_000);
+    if (!ipLimit.allowed) {
+      return errorResponse('RATE_LIMITED', 'Too many requests from this address.', 429);
+    }
     const rateLimitKey = `chat:${parsed.data.session_token}`;
     const limit = checkRateLimit(rateLimitKey, LIMITS.MAX_MESSAGES_PER_MINUTE, 60_000);
     if (!limit.allowed) {

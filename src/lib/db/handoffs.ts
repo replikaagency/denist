@@ -43,6 +43,22 @@ export async function getOpenHandoffForConversation(
   return data as HandoffEvent | null;
 }
 
+export async function assignHandoffEvent(
+  id: string,
+  staffUserId: string,
+): Promise<HandoffEvent> {
+  const { data, error } = await db()
+    .from('handoff_events')
+    .update({ assigned_to: staffUserId })
+    .eq('id', id)
+    .select('*')
+    .single();
+
+  if (error) throw AppError.database('Failed to assign handoff event', error);
+  if (!data) throw AppError.notFound('HandoffEvent', id);
+  return data as HandoffEvent;
+}
+
 export async function resolveHandoffEvent(
   id: string,
   notes?: string,

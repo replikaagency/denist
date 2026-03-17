@@ -35,6 +35,26 @@ export async function createAppointmentRequest(insert: {
   return data as AppointmentRequest;
 }
 
+/**
+ * Return the most recent non-cancelled appointment request for a conversation,
+ * or null if none exists. Used to prevent duplicate requests per conversation.
+ */
+export async function getOpenAppointmentRequestForConversation(
+  conversationId: string,
+): Promise<AppointmentRequest | null> {
+  const { data, error } = await db()
+    .from('appointment_requests')
+    .select('*')
+    .eq('conversation_id', conversationId)
+    .in('status', ['pending', 'confirmed'])
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw AppError.database('Failed to check appointment request', error);
+  return data as AppointmentRequest | null;
+}
+
 export async function getAppointmentRequestById(id: string): Promise<AppointmentRequest> {
   const { data, error } = await db()
     .from('appointment_requests')
@@ -43,6 +63,27 @@ export async function getAppointmentRequestById(id: string): Promise<Appointment
     .maybeSingle();
 
   if (error) throw AppError.database('Failed to fetch appointment request', error);
+  if (!data) throw AppError.notFound('AppointmentRequest', id);
+  return data as AppointmentRequest;
+}
+
+/**
+ * Enrich an existing appointment request with more-complete field values.
+ * Only accepts scheduling fields (not status) so callers cannot accidentally
+ * change request lifecycle via this path.
+ */
+export async function enrichAppointmentRequest(
+  id: string,
+  patch: Partial<Pick<AppointmentRequest, 'appointment_type' | 'preferred_date' | 'preferred_time_of_day' | 'notes'>>,
+): Promise<AppointmentRequest> {
+  const { data, error } = await db()
+    .from('appointment_requests')
+    .update(patch)
+    .eq('id', id)
+    .select('*')
+    .single();
+
+  if (error) throw AppError.database('Failed to enrich appointment request', error);
   if (!data) throw AppError.notFound('AppointmentRequest', id);
   return data as AppointmentRequest;
 }

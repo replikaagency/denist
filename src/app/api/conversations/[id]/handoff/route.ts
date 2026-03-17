@@ -28,14 +28,16 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     const conversation = await getConversationById(id);
 
+    // Closed conversations cannot be handed off — check before idempotency so
+    // a stale open handoff_event on a resolved/abandoned row returns 409, not 200.
+    if (conversation.status === 'resolved' || conversation.status === 'abandoned') {
+      return errorResponse('CONFLICT', 'Cannot handoff a closed conversation.', 409);
+    }
+
     // Idempotency: do not create a second open handoff for the same conversation
     const openHandoff = await getOpenHandoffForConversation(id);
     if (openHandoff) {
       return successResponse({ handoff: openHandoff, conversation }, 200);
-    }
-
-    if (conversation.status === 'resolved' || conversation.status === 'abandoned') {
-      return errorResponse('CONFLICT', 'Cannot handoff a closed conversation.', 409);
     }
 
     const handoff = await createHandoffEvent({

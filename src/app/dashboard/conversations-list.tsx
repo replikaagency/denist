@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Badge } from '@/components/ui/badge';
@@ -14,6 +15,8 @@ interface ConversationRow {
   ai_enabled: boolean;
   last_message_at: string | null;
   created_at: string;
+  last_message_preview: string | null;
+  last_message_role: string | null;
   contact: {
     id: string;
     first_name: string | null;
@@ -33,10 +36,19 @@ const STATUS_COLORS: Record<string, string> = {
 
 const STATUS_LABELS: Record<string, string> = {
   active: 'AI Active',
-  waiting_human: 'Waiting for Staff',
+  waiting_human: 'Needs Attention',
   human_active: 'Staff Active',
   resolved: 'Resolved',
   abandoned: 'Abandoned',
+};
+
+const CHANNEL_LABELS: Record<string, string> = {
+  web_chat: 'Web Chat',
+  web: 'Web Chat',
+  sms: 'SMS',
+  email: 'Email',
+  phone: 'Phone',
+  whatsapp: 'WhatsApp',
 };
 
 function formatTime(iso: string | null) {
@@ -71,13 +83,22 @@ export function ConversationsList({
   statusCounts: Record<string, number>;
 }) {
   const router = useRouter();
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Realtime: refresh the list when any conversation changes
+  useEffect(() => {
+    return () => {
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    };
+  }, []);
+
+  // Realtime: refresh the list when any conversation changes.
+  // Debounced to 300 ms so a burst of rapid events triggers only one refresh.
   useRealtimeConversations(() => {
-    router.refresh();
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => router.refresh(), 300);
   });
 
-  const STATUSES = ['all', 'active', 'waiting_human', 'human_active', 'resolved'];
+  const STATUSES = ['all', 'active', 'waiting_human', 'human_active', 'resolved', 'abandoned'];
 
   return (
     <div className="space-y-4">
@@ -115,7 +136,9 @@ export function ConversationsList({
         <CardContent className="p-0">
           {conversations.length === 0 ? (
             <div className="px-5 py-8 text-center text-sm text-muted-foreground">
-              No conversations found.
+              {currentStatus
+                ? `No ${(STATUS_LABELS[currentStatus] ?? currentStatus).toLowerCase()} conversations.`
+                : 'No conversations yet.'}
             </div>
           ) : (
             <div className="divide-y">
@@ -136,15 +159,28 @@ export function ConversationsList({
                       >
                         {STATUS_LABELS[conv.status] ?? conv.status}
                       </Badge>
-                      {!conv.ai_enabled && conv.status !== 'resolved' && (
-                        <Badge variant="outline" className="text-[10px]">
-                          AI Off
+                      {!conv.ai_enabled
+                        && conv.status !== 'resolved'
+                        && conv.status !== 'abandoned'
+                        && conv.status !== 'waiting_human'
+                        && conv.status !== 'human_active' && (
+                        <Badge variant="outline" className="text-[10px] bg-orange-50 text-orange-700 border-orange-200">
+                          AI Paused
                         </Badge>
                       )}
                     </div>
-                    <div className="mt-0.5 text-xs text-muted-foreground">
-                      {conv.channel} · {conv.contact?.email || conv.contact?.phone || 'No contact info'}
-                    </div>
+                    {conv.last_message_preview ? (
+                      <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                        <span className="font-medium capitalize">{conv.last_message_role === 'patient' ? 'Patient' : conv.last_message_role === 'human' ? 'Staff' : 'AI'}:</span>{' '}
+                        {conv.last_message_preview.length > 80
+                          ? conv.last_message_preview.slice(0, 80) + '…'
+                          : conv.last_message_preview}
+                      </div>
+                    ) : (
+                      <div className="mt-0.5 text-xs text-muted-foreground">
+                        {CHANNEL_LABELS[conv.channel] ?? conv.channel} · {conv.contact?.email || conv.contact?.phone || 'No contact info'}
+                      </div>
+                    )}
                   </div>
                   <span className="shrink-0 text-xs text-muted-foreground">
                     {formatTime(conv.last_message_at)}

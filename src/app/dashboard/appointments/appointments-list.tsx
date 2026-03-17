@@ -13,6 +13,28 @@ const STATUS_COLORS: Record<string, string> = {
   completed: 'bg-blue-100 text-blue-800',
 };
 
+const STATUS_LABELS: Record<string, string> = {
+  pending: 'Pending',
+  confirmed: 'Confirmed',
+  cancelled: 'Cancelled',
+  no_show: 'No Show',
+  completed: 'Completed',
+};
+
+const APPOINTMENT_TYPE_LABELS: Record<string, string> = {
+  new_patient: 'New Patient',
+  checkup: 'Check-up',
+  emergency: 'Emergency',
+  whitening: 'Whitening',
+  implant_consult: 'Implant Consult',
+  orthodontic_consult: 'Orthodontic Consult',
+  other: 'Other',
+};
+
+function toTitleCase(str: string) {
+  return str.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function formatDate(iso: string | null) {
   if (!iso) return '—';
   return new Date(iso).toLocaleDateString([], {
@@ -68,10 +90,10 @@ export function AppointmentsList({
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium">{name}</span>
                       <Badge variant="outline" className={`text-[10px] ${STATUS_COLORS[status] ?? ''}`}>
-                        {status.replace('_', ' ')}
+                        {STATUS_LABELS[status] ?? toTitleCase(status)}
                       </Badge>
                       <Badge variant="outline" className="text-[10px]">
-                        {(req.appointment_type as string).replace('_', ' ')}
+                        {APPOINTMENT_TYPE_LABELS[req.appointment_type as string] ?? toTitleCase(req.appointment_type as string)}
                       </Badge>
                     </div>
                     <div className="mt-0.5 text-xs text-muted-foreground">

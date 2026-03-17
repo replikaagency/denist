@@ -75,11 +75,14 @@ export async function startOrResumeConversation(contactId: string): Promise<{
 }> {
   const db = createSupabaseAdminClient();
 
+  // Resume any in-progress conversation — active, waiting for staff, or staff
+  // currently handling. Creating a new conversation would orphan the handoff
+  // and lose continuity for the patient.
   const { data: existing, error } = await db
     .from('conversations')
     .select('*')
     .eq('contact_id', contactId)
-    .eq('status', 'active')
+    .in('status', ['active', 'waiting_human', 'human_active'])
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();

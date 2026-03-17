@@ -78,34 +78,22 @@ export function useChat(): UseChatReturn {
         throw new Error(json.error?.message ?? 'Failed to start chat');
       }
 
-      const { conversation, contact: contactData, greeting } = json.data;
+      const { conversation, contact: contactData, messages: initialMessages } = json.data;
       setConversationId(conversation.id);
       setContact(contactData);
       setConversationStatus(conversation.status);
 
-      if (greeting) {
-        setMessages([{
-          id: greeting.id,
-          role: greeting.role,
-          content: greeting.content,
-          created_at: greeting.created_at,
-        }]);
-      }
-
-      // If conversation already had messages (resumed), load them
-      if (!greeting) {
-        const msgRes = await fetch(`/api/conversations/${conversation.id}/messages`);
-        const msgJson = await msgRes.json();
-        if (msgJson.ok && msgJson.data) {
-          setMessages(
-            msgJson.data.map((m: ChatMessage) => ({
-              id: m.id,
-              role: m.role,
-              content: m.content,
-              created_at: m.created_at,
-            })),
-          );
-        }
+      // `messages` is always returned: [greeting] for new conversations,
+      // or recent history for resumed ones. No separate staff-auth fetch needed.
+      if (Array.isArray(initialMessages) && initialMessages.length > 0) {
+        setMessages(
+          (initialMessages as ChatMessage[]).map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            created_at: m.created_at,
+          })),
+        );
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start chat');

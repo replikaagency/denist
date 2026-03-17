@@ -1,6 +1,12 @@
 // =============================================================================
-// Simple in-memory rate limiter — suitable for single-process MVP.
-// For production multi-instance deployment, replace with Redis-based limiter.
+// Simple in-memory rate limiter — suitable for single-process development.
+//
+// PRODUCTION WARNING: Vercel runs many isolated serverless instances. Each
+// instance has its own Map, so limits are enforced per-instance, not globally.
+// A determined client can exceed the intended limits by hitting different
+// instances. For true global rate limiting, replace this with an Upstash Redis
+// adapter (e.g. @upstash/ratelimit) and set UPSTASH_REDIS_REST_URL +
+// UPSTASH_REDIS_REST_TOKEN in your Vercel environment.
 // =============================================================================
 
 interface RateLimitEntry {
@@ -39,6 +45,19 @@ export interface RateLimitResult {
  * @param maxRequests Maximum number of requests in the window
  * @param windowMs Window duration in milliseconds
  */
+/**
+ * Extract the best available IP address from a Next.js request.
+ * Vercel sets x-forwarded-for; falls back to a constant so the limiter
+ * degrades gracefully rather than throwing when the header is absent.
+ */
+export function getClientIp(request: { headers: { get(name: string): string | null } }): string {
+  const forwarded = request.headers.get('x-forwarded-for');
+  if (forwarded) return forwarded.split(',')[0].trim();
+  const realIp = request.headers.get('x-real-ip');
+  if (realIp) return realIp.trim();
+  return 'unknown';
+}
+
 export function checkRateLimit(
   key: string,
   maxRequests: number,

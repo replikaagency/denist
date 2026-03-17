@@ -5,8 +5,14 @@
 
 import { createServerClient } from '@supabase/ssr';
 import { type NextRequest, NextResponse } from 'next/server';
+import type { User } from '@supabase/supabase-js';
 
-export async function updateSession(request: NextRequest) {
+export interface UpdateSessionResult {
+  response: NextResponse;
+  user: User | null;
+}
+
+export async function updateSession(request: NextRequest): Promise<UpdateSessionResult> {
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
@@ -30,8 +36,9 @@ export async function updateSession(request: NextRequest) {
     },
   );
 
-  // Refresh the session — this updates the cookie if needed
-  await supabase.auth.getUser();
+  // Refresh the session and surface the user so the middleware can gate routes
+  // without a separate cookie-name heuristic.
+  const { data: { user } } = await supabase.auth.getUser();
 
-  return response;
+  return { response, user };
 }

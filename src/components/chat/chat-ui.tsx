@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SendHorizonal } from "lucide-react";
+import { SendHorizonal, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { ChatMessage, type Message } from "@/components/chat/chat-message";
+import { useRealtimeMessages } from "@/hooks/use-realtime";
 
 const SESSION_TOKEN_KEY = "dental_ai_session_token";
 
@@ -30,8 +31,17 @@ export function ChatUI() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [initializing, setInitializing] = useState(true);
+  // True once the conversation has been handed off to a human agent.
+  // Disables the chat input and shows a waiting banner.
+  const [isHandedOff, setIsHandedOff] = useState(false);
+  // Two-step confirmation for "Start new conversation" — avoids accidental resets.
+  const [confirmNew, setConfirmNew] = useState(false);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const sessionTokenRef = useRef("");
+  // Track message IDs we have already rendered to prevent duplicates on
+  // realtime reconnect. Seeded with greeting id when the conversation starts.
+  const seenIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -59,13 +69,27 @@ export function ChatUI() {
 
       setConversationId(json.data.conversation.id);
 
-      if (json.data.greeting) {
-        setMessages([{
-          id: json.data.greeting.id,
-          role: "assistant",
-          content: json.data.greeting.content,
-          timestamp: getTime(),
-        }]);
+      const conv = json.data.conversation as { ai_enabled: boolean; status: string };
+      if (!conv.ai_enabled || conv.status === 'waiting_human' || conv.status === 'human_active') {
+        setIsHandedOff(true);
+      }
+
+      // `messages` is always present — history for resumes, greeting for new convos.
+      // Map DB message roles to the display roles used by <ChatMessage>.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const incoming = (json.data.messages as any[] ?? []).map((m: any) => ({
+        id: m.id as string,
+        role: (m.role === "patient" ? "user" : m.role === "human" ? "staff" : "assistant") as
+          "user" | "assistant" | "staff",
+        content: m.content as string,
+        timestamp: getTime(),
+      }));
+
+      for (const m of incoming) {
+        seenIdsRef.current.add(m.id);
+      }
+      if (incoming.length > 0) {
+        setMessages(incoming);
       }
     } catch (err) {
       setError("Could not connect to the server. Please try again.");
@@ -77,6 +101,60 @@ export function ChatUI() {
   useEffect(() => {
     startConversation();
   }, [startConversation]);
+
+  // Clean up the confirmation auto-cancel timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    };
+  }, []);
+
+  const handleNewConversation = useCallback(() => {
+    if (!confirmNew) {
+      // First click — ask for confirmation and auto-cancel after 3 s.
+      setConfirmNew(true);
+      confirmTimerRef.current = setTimeout(() => setConfirmNew(false), 3000);
+      return;
+    }
+    // Guard: don't reset while a send is in-flight — the response callback
+    // would append an AI message to the freshly cleared conversation.
+    if (isTyping) return;
+    // Second click — reset and start fresh.
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmNew(false);
+    setMessages([]);
+    setInput("");
+    setIsTyping(false);
+    setIsHandedOff(false);
+    setError(null);
+    setConversationId(null);
+    seenIdsRef.current = new Set();
+    // Generate a new session token so the API creates a brand-new conversation.
+    const newToken = crypto.randomUUID();
+    localStorage.setItem(SESSION_TOKEN_KEY, newToken);
+    sessionTokenRef.current = newToken;
+    startConversation();
+  }, [confirmNew, isTyping, startConversation]);
+
+  // Realtime: receive staff replies and system notifications without page reload.
+  // Processes `human` and `system` role inserts only — patient and AI messages
+  // are handled via the HTTP response in sendMessage().
+  useRealtimeMessages(conversationId, (newMsg) => {
+    const role = newMsg.role as string;
+    if (role !== 'human' && role !== 'system') return;
+    const msgId = newMsg.id as string;
+    if (seenIdsRef.current.has(msgId)) return;
+    seenIdsRef.current.add(msgId);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: msgId,
+        role: role === 'system' ? 'system' : 'staff',
+        content: newMsg.content as string,
+        timestamp: getTime(),
+      },
+    ]);
+  });
 
   async function sendMessage() {
     const trimmed = input.trim();
@@ -119,7 +197,15 @@ export function ChatUI() {
         timestamp: getTime(),
       };
 
+      // Mark this AI message as seen so the realtime INSERT doesn't duplicate it
+      seenIdsRef.current.add(json.data.message.id as string);
       setMessages((prev) => [...prev, aiMsg]);
+
+      // Detect escalation: conversation is now waiting for a human agent
+      const conv = json.data.conversation as { ai_enabled: boolean; status: string } | undefined;
+      if (conv && (!conv.ai_enabled || conv.status === 'waiting_human')) {
+        setIsHandedOff(true);
+      }
     } catch (err) {
       setError("Connection error. Please try again.");
     } finally {
@@ -134,13 +220,27 @@ export function ChatUI() {
           <div className="flex size-9 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
             AI
           </div>
-          <div>
-            <CardTitle className="text-sm font-semibold">Bright Smile Dental</CardTitle>
+          <div className="flex-1">
+            <CardTitle className="text-sm font-semibold">
+              {process.env.NEXT_PUBLIC_CLINIC_NAME ?? "Our Dental Practice"}
+            </CardTitle>
             <CardDescription className="flex items-center gap-1.5 text-xs">
               <span className="size-1.5 rounded-full bg-emerald-500" />
               AI Receptionist · Online
             </CardDescription>
           </div>
+          {!initializing && messages.length > 0 && (
+            <Button
+              variant={confirmNew ? "destructive" : "ghost"}
+              size="sm"
+              className="h-8 gap-1.5 text-xs"
+              onClick={handleNewConversation}
+              title="Start a new conversation"
+            >
+              <RotateCcw className="size-3" />
+              {confirmNew ? "Confirm?" : "New chat"}
+            </Button>
+          )}
         </div>
       </CardHeader>
 
@@ -190,34 +290,43 @@ export function ChatUI() {
         </div>
       </CardContent>
 
-      <CardFooter className="border-t px-4 py-3">
-        <form
-          className="flex w-full items-center gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            sendMessage();
-          }}
-        >
-          <Input
-            className="h-10 flex-1 text-sm"
-            placeholder="Type your message…"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            disabled={isTyping || initializing || !conversationId}
-            autoComplete="off"
-            autoFocus
-          />
-          <Button
-            type="submit"
-            size="icon"
-            className="size-10 shrink-0"
-            disabled={!input.trim() || isTyping || !conversationId}
-            aria-label="Send message"
+      {isHandedOff ? (
+        <CardFooter className="border-t px-4 py-3">
+          <div className="flex w-full items-center justify-center gap-2 rounded-md bg-amber-50 px-4 py-2.5 text-sm text-amber-700 border border-amber-200">
+            <span className="size-2 animate-pulse rounded-full bg-amber-500" />
+            A staff member will be with you shortly.
+          </div>
+        </CardFooter>
+      ) : (
+        <CardFooter className="border-t px-4 py-3">
+          <form
+            className="flex w-full items-center gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              sendMessage();
+            }}
           >
-            <SendHorizonal className="size-4" />
-          </Button>
-        </form>
-      </CardFooter>
+            <Input
+              className="h-10 flex-1 text-sm"
+              placeholder="Type your message…"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              disabled={isTyping || initializing || !conversationId}
+              autoComplete="off"
+              autoFocus
+            />
+            <Button
+              type="submit"
+              size="icon"
+              className="size-10 shrink-0"
+              disabled={!input.trim() || isTyping || !conversationId}
+              aria-label="Send message"
+            >
+              <SendHorizonal className="size-4" />
+            </Button>
+          </form>
+        </CardFooter>
+      )}
     </Card>
   );
 }
