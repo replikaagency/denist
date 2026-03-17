@@ -234,6 +234,40 @@ function resolveFields(appointment: Partial<AppointmentDetails>): ResolvedFields
 }
 
 /**
+ * Returns true only when appointment data is complete enough to create a
+ * pending DB record satisfying migration 0005 constraints:
+ *   - service_type known (not null)
+ *   - preferred_time resolves to a valid time-of-day bucket
+ *   - at least one date anchor: preferred_date OR preferred_days non-empty
+ *
+ * preferredDays is a DB-only field not currently in AppointmentDetails;
+ * it's accepted here so the OR logic matches the DB constraint exactly
+ * and is ready when the LLM schema is extended.
+ */
+export function isAppointmentDataComplete(
+  appointment: Partial<AppointmentDetails>,
+  preferredDays?: string[],
+): boolean {
+  if (!appointment.service_type) return false;
+  if (!normalizeTimeOfDay(appointment.preferred_time)) return false;
+  const hasDate = !!normalizePreferredDate(appointment.preferred_date);
+  const hasDays = Array.isArray(preferredDays) && preferredDays.length > 0;
+  return hasDate || hasDays;
+}
+
+/**
+ * Return the active (pending or confirmed) appointment request for this
+ * conversation, or null if none exists.
+ * Exposed here so callers in chat.service.ts can make explicit branching
+ * decisions without depending on createRequest() internals.
+ */
+export async function findOpenAppointmentRequest(
+  conversationId: string,
+): Promise<AppointmentRequest | null> {
+  return getOpenAppointmentRequestForConversation(conversationId);
+}
+
+/**
  * Build a patch that fills in missing fields on an existing row using better
  * data from a later turn.  Rules:
  *   - appointment_type: upgrade from 'other' only — never overwrite a

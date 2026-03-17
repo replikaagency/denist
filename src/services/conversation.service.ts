@@ -50,6 +50,39 @@ export async function saveState(
 }
 
 /**
+ * Keeps the appointment_request_open flag in conversation state in sync with
+ * DB reality after an appointment_requests status change (e.g. staff PATCH).
+ *
+ * Performs exactly one read + one conditional write. Does NOT use
+ * loadState/saveState to avoid a double getConversationById call.
+ * Merges safely: all existing metadata keys and all other conversation_state
+ * fields are preserved — only appointment_request_open is touched.
+ *
+ * No-ops silently when conversationId is null (appointments with no linked
+ * conversation) or when the flag is already correct.
+ */
+export async function syncAppointmentRequestFlag(
+  conversationId: string | null | undefined,
+  isOpen: boolean,
+): Promise<void> {
+  if (!conversationId) return;
+
+  const conversation = await getConversationById(conversationId);
+  const existingMetadata = (conversation.metadata ?? {}) as Record<string, unknown>;
+  const rawState = (existingMetadata.conversation_state ?? {}) as Record<string, unknown>;
+
+  // Already in sync — skip the write.
+  if (!!rawState.appointment_request_open === isOpen) return;
+
+  await updateConversation(conversationId, {
+    metadata: {
+      ...existingMetadata,
+      conversation_state: { ...rawState, appointment_request_open: isOpen },
+    },
+  });
+}
+
+/**
  * Transition conversation status with invariant enforcement.
  * When leaving `active`, automatically disables AI.
  */

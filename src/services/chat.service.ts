@@ -16,7 +16,7 @@ import {
   transitionStatus,
 } from './conversation.service';
 import { ensureLead } from './lead.service';
-import { createRequest } from './appointment.service';
+import { createRequest, findOpenAppointmentRequest, isAppointmentDataComplete } from './appointment.service';
 import { createHandoff } from './handoff.service';
 
 import type { Contact, Conversation, Message } from '@/types/database';
@@ -79,6 +79,13 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   // 6. Load conversation state
   const state = await loadState(conversation_id);
 
+  // 6.5. Sync appointment_request_open with DB reality BEFORE processTurn so
+  // validateFlowAction inside the engine sees the correct flag.
+  // Always queries — catches flag=false (prior session) AND flag=true but
+  // cancelled/completed externally by staff. Result reused in appointment block.
+  const preExistingRequest = await findOpenAppointmentRequest(conversation_id);
+  state.appointment_request_open = !!preExistingRequest;
+
   // 7. Build system prompt
   const systemPrompt = buildSystemPrompt(getClinicConfig(), state);
 
@@ -136,27 +143,11 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     await updateConversation(conversation_id, { lead_id: lead.id });
   }
 
-  // Appointment request creation — three independent triggers so the row is
-  // never silently dropped regardless of which next_action the LLM chooses:
-  //
-  //   1. `offer_appointment`  — canonical path: LLM is ready to offer slots.
-  //   2. `confirm_details`    — LLM chose to confirm before offering; the
-  //                             system prompt explicitly allows this. Create
-  //                             the row now so staff see the intent even if
-  //                             the patient drops off between these turns.
-  //   3. `state.completed`    — engine detected all required fields are filled
-  //                             but the LLM returned the wrong next_action
-  //                             (defensive backstop for LLM errors).
-  //
-  // Guarded by isSchedulingIntent for triggers 2 & 3 so that `confirm_details`
-  // on an insurance or billing turn doesn't produce a spurious appointment row.
-  //
-  // isIdentified (name + phone/email in the contact record) is required for
-  // all paths — if the patient hasn't identified themselves yet, the request
-  // is deferred to the next turn where enrichContact will have filled those in.
-  //
-  // createRequest is idempotent (app-level check + DB partial unique index),
-  // so it's safe to call on multiple consecutive triggering turns.
+  // Appointment request creation — three triggers (all validated by flow controller):
+  //   1. `offer_appointment`  — canonical path.
+  //   2. `confirm_details`    — LLM confirmed before offering (scheduling intent only).
+  //   3. `state.completed`    — engine backstop: all fields filled.
+  //   deferred               — offer_appointment_pending from a prior turn.
   const isSchedulingIntent =
     turnResult.state.current_intent === 'appointment_request' ||
     turnResult.state.current_intent === 'appointment_reschedule';
@@ -167,22 +158,32 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
 
   const engineCompletedAppointment = turnResult.state.completed && isSchedulingIntent;
 
-  // Deferred trigger: a prior turn fired `offer_appointment` but the patient
-  // wasn't identified yet. The flag is now set in state; if they've since
-  // provided their details, create the request now.
   const deferredAppointment = turnResult.state.offer_appointment_pending && isIdentified;
 
+  // preExistingRequest was fetched in step 6.5 (or null if flag was already true).
+  // hasOpenRequest is true when a request was found pre-turn OR the flag was
+  // already persisted from a previous turn.
+  const hasOpenRequest = isIdentified &&
+    (!!preExistingRequest || turnResult.state.appointment_request_open);
+
+  const appointmentDataReady = isAppointmentDataComplete(turnResult.state.appointment);
+
   if ((appointmentActionFired || engineCompletedAppointment || deferredAppointment) && isIdentified) {
-    const lead = await ensureLead(contact.id);
-    await createRequest({
-      contactId: contact.id,
-      conversationId: conversation_id,
-      leadId: lead.id,
-      appointment: turnResult.state.appointment,
-    });
-    turnResult.state.offer_appointment_pending = false;
+    if (hasOpenRequest || appointmentDataReady) {
+      const lead = await ensureLead(contact.id);
+      await createRequest({
+        contactId: contact.id,
+        conversationId: conversation_id,
+        leadId: lead.id,
+        appointment: turnResult.state.appointment,
+      });
+      turnResult.state.offer_appointment_pending = false;
+      turnResult.state.appointment_request_open = true;
+    } else {
+      // No existing request AND data is still incomplete — keep deferring.
+      turnResult.state.offer_appointment_pending = true;
+    }
   } else if (turnResult.rawOutput.next_action === 'offer_appointment' && !isIdentified) {
-    // Patient not yet identified — remember the intent for the next turn.
     turnResult.state.offer_appointment_pending = true;
   }
 

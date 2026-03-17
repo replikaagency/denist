@@ -10,6 +10,7 @@ import { AppointmentRequestUpdateSchema } from '@/lib/schemas/appointment';
 import { getAppointmentRequestById, updateAppointmentRequest } from '@/lib/db/appointments';
 import { advanceLeadStatus } from '@/lib/db/leads';
 import { getLeadByContactId } from '@/lib/db/leads';
+import { syncAppointmentRequestFlag } from '@/services/conversation.service';
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -52,6 +53,14 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     }
 
     const appt = await updateAppointmentRequest(id, parsed.data);
+
+    // Sync conversation state flag so the engine's flow controller reflects
+    // the new appointment status on the next patient turn.
+    const OPEN_APPT_STATUSES = new Set(['pending', 'confirmed']);
+    await syncAppointmentRequestFlag(
+      appt.conversation_id,
+      OPEN_APPT_STATUSES.has(appt.status),
+    );
 
     // Cascade status changes to the lead
     if (parsed.data.status === 'confirmed') {

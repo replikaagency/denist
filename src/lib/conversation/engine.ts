@@ -18,6 +18,7 @@ import {
   LLMTurnOutputSchema,
   type LLMTurnOutput,
   type ConversationState,
+  type NextAction,
 } from "./schema";
 import { getMissingFields, getNextFieldPrompt } from "./fields";
 
@@ -242,6 +243,72 @@ export function mergeState(
   return newState;
 }
 
+// ---------------------------------------------------------------------------
+// SAFE STATE MERGE (two-phase)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fill-null-only merge helper. Never overwrites an existing non-null/non-empty
+ * value. Returns the merged object and a log of attempted overwrites for audit.
+ * @internal
+ */
+function safeMergeObj<T extends Record<string, unknown>>(
+  existing: T,
+  incoming: Partial<T>,
+): { merged: T; overwrites: Array<{ field: string; existing: unknown; attempted: unknown }> } {
+  const result = { ...existing };
+  const overwrites: Array<{ field: string; existing: unknown; attempted: unknown }> = [];
+
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value === null || value === undefined || value === '') continue;
+    const current = (existing as Record<string, unknown>)[key];
+    if (current === null || current === undefined || current === '') {
+      (result as Record<string, unknown>)[key] = value;
+    } else if (current !== value) {
+      overwrites.push({ field: key, existing: current, attempted: value });
+    }
+  }
+
+  return { merged: result as T, overwrites };
+}
+
+/**
+ * Phase 1 of the two-phase merge: merges patient identity fields and updates
+ * turn counters. appointment/symptoms are intentionally left untouched until
+ * the flow controller validates the LLM's next_action.
+ */
+function safeMergePatient(
+  state: ConversationState,
+  output: LLMTurnOutput,
+): ConversationState {
+  const { merged: patient } = safeMergeObj(state.patient, output.patient_fields);
+  return {
+    ...state,
+    turn_count: state.turn_count + 1,
+    current_intent: output.intent,
+    current_urgency: resolveUrgency(state.current_urgency, output.urgency),
+    patient,
+    consecutive_low_confidence:
+      output.intent_confidence < CONFIDENCE.MEDIUM
+        ? state.consecutive_low_confidence + 1
+        : 0,
+  };
+}
+
+/**
+ * Phase 2 of the two-phase merge: fills null appointment and symptom fields.
+ * Called only when validateFlowAction confirmed the LLM's next_action is valid
+ * for the current flow stage — prevents state contamination from incoherent turns.
+ */
+function safeMergeAppointment(
+  state: ConversationState,
+  output: LLMTurnOutput,
+): ConversationState {
+  const { merged: appointment } = safeMergeObj(state.appointment, output.appointment);
+  const { merged: symptoms } = safeMergeObj(state.symptoms, output.symptoms);
+  return { ...state, appointment, symptoms };
+}
+
 /**
  * Urgency only escalates during a conversation — never de-escalates.
  * If the patient first says "I want a cleaning" (routine) then later says
@@ -257,6 +324,105 @@ const URGENCY_RANK: Record<Urgency, number> = {
 
 function resolveUrgency(current: Urgency, incoming: Urgency): Urgency {
   return URGENCY_RANK[incoming] > URGENCY_RANK[current] ? incoming : current;
+}
+
+// ---------------------------------------------------------------------------
+// FLOW CONTROLLER
+// ---------------------------------------------------------------------------
+
+export type ConversationFlowStage =
+  | 'collecting'      // Scheduling intent, required fields still missing
+  | 'ready'           // Scheduling intent, all required fields present
+  | 'non_scheduling'  // Non-scheduling intent or no intent yet
+  | 'terminal';       // Already escalated or completed
+
+export interface FlowValidationResult {
+  stage: ConversationFlowStage;
+  overridden: boolean;
+  originalAction: NextAction;
+  correctedAction: NextAction;
+  correctedReply: string | null;
+  reason: string | null;
+}
+
+const PERMITTED_ACTIONS: Record<ConversationFlowStage, Set<NextAction>> = {
+  collecting:     new Set<NextAction>(['ask_field', 'continue', 'provide_info', 'escalate_human', 'escalate_emergency']),
+  ready:          new Set<NextAction>(['offer_appointment', 'confirm_details', 'ask_field', 'end_conversation', 'escalate_human', 'escalate_emergency']),
+  non_scheduling: new Set<NextAction>(['ask_field', 'confirm_details', 'provide_info', 'continue', 'end_conversation', 'escalate_human', 'escalate_emergency']),
+  terminal:       new Set<NextAction>(['end_conversation', 'escalate_human', 'escalate_emergency']),
+};
+
+function deriveFlowStage(state: ConversationState): ConversationFlowStage {
+  if (state.escalated || state.completed) return 'terminal';
+
+  const isScheduling =
+    state.current_intent === 'appointment_request' ||
+    state.current_intent === 'appointment_reschedule';
+
+  if (!state.current_intent || !isScheduling) return 'non_scheduling';
+
+  const missing = getMissingFields(state.current_intent, {
+    patient: state.patient,
+    appointment: state.appointment,
+    symptoms: state.symptoms,
+  });
+
+  return missing.length > 0 ? 'collecting' : 'ready';
+}
+
+/**
+ * Validates the LLM's next_action against the current flow stage.
+ * Called with previewState (patient merged + appointment previewed) so
+ * fields extracted THIS turn are visible — preventing false negatives where
+ * the LLM extracts the last required field and fires offer_appointment on the
+ * same turn.
+ *
+ * If the action is not permitted, overrides it to ask_field (or continue if
+ * no field prompt is available) and generates a corrected reply.
+ */
+export function validateFlowAction(
+  output: LLMTurnOutput,
+  state: ConversationState,
+): FlowValidationResult {
+  const stage = deriveFlowStage(state);
+  const permitted = PERMITTED_ACTIONS[stage];
+
+  const isRedundantOffer =
+    output.next_action === 'offer_appointment' && state.appointment_request_open;
+
+  if (permitted.has(output.next_action) && !isRedundantOffer) {
+    return {
+      stage,
+      overridden: false,
+      originalAction: output.next_action,
+      correctedAction: output.next_action,
+      correctedReply: null,
+      reason: null,
+    };
+  }
+
+  const reason = isRedundantOffer
+    ? 'offer_appointment blocked: appointment request already open'
+    : `next_action '${output.next_action}' not permitted in stage '${stage}'`;
+
+  const nextPrompt = state.current_intent
+    ? getNextFieldPrompt(state.current_intent, {
+        patient: state.patient,
+        appointment: state.appointment,
+        symptoms: state.symptoms,
+      })
+    : null;
+
+  const correctedAction: NextAction = nextPrompt ? 'ask_field' : 'continue';
+
+  return {
+    stage,
+    overridden: true,
+    originalAction: output.next_action,
+    correctedAction,
+    correctedReply: nextPrompt?.prompt ?? null,
+    reason,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +456,7 @@ export interface TurnResult {
   state: ConversationState;
   escalation: EscalationDecision;
   fallback: FallbackResult;
+  flowValidation: FlowValidationResult;
   rawOutput: LLMTurnOutput;
 }
 
@@ -315,22 +482,50 @@ export function processTurn(
 
   const output = parsed.data;
 
-  // 1. Merge extracted data into state
-  const newState = mergeState(currentState, output);
+  // 1. Merge patient identity + turn counters (always safe — never overwrites).
+  const partialState = safeMergePatient(currentState, output);
 
-  // 2. Check deterministic escalation rules
-  const escalation = checkEscalation(output, newState);
+  // 2. Build an ephemeral previewState for flow validation.
+  //    Previews appointment fields as they would look after safeMergeAppointment
+  //    so validateFlowAction sees fields extracted THIS turn, preventing false
+  //    negatives when the LLM fills the last required field and fires
+  //    offer_appointment on the same turn.
+  const { merged: previewAppointment } = safeMergeObj(
+    partialState.appointment,
+    output.appointment,
+  );
+  const previewState: ConversationState = { ...partialState, appointment: previewAppointment };
 
-  // 3. Apply fallback rewrites
-  const fallback = applyFallbacks(output, newState);
+  // 3. Validate next_action against the preview state.
+  const flowValidation = validateFlowAction(output, previewState);
+  const correctedOutput = flowValidation.overridden
+    ? { ...output, next_action: flowValidation.correctedAction }
+    : output;
 
-  // 4. Determine final reply
+  // 4. Conditionally merge appointment/symptoms.
+  //    Skipped when the action was overridden — prevents contaminating state
+  //    with fields from an incoherent LLM turn.
+  const newState = flowValidation.overridden
+    ? partialState
+    : safeMergeAppointment(partialState, output);
+
+  // 5. Check deterministic escalation rules.
+  const escalation = checkEscalation(correctedOutput, newState);
+
+  // 6. Apply fallback rewrites.
+  const fallback = applyFallbacks(correctedOutput, newState);
+
+  // 7. Determine final reply.
+  // Priority (highest wins): escalation append > fallback rewrite > flow override > LLM reply
   let reply = output.reply;
+  if (flowValidation.overridden && flowValidation.correctedReply) {
+    reply = flowValidation.correctedReply;
+  }
   if (fallback.applied && fallback.rewrittenReply) {
     reply = fallback.rewrittenReply;
   }
 
-  // 5. If escalation triggered, append handoff message
+  // 8. If escalation triggered, append handoff message.
   if (escalation.shouldEscalate) {
     newState.escalated = true;
     newState.escalation_reason = escalation.reason;
@@ -344,11 +539,11 @@ export function processTurn(
     }
   }
 
-  // 6. If no escalation and all required fields are filled, nudge toward completion
+  // 9. If no escalation and all required fields are filled, nudge toward completion.
   if (
     !escalation.shouldEscalate &&
     !fallback.applied &&
-    output.next_action === "ask_field" &&
+    correctedOutput.next_action === "ask_field" &&
     newState.current_intent
   ) {
     const missing = getMissingFields(
@@ -365,6 +560,7 @@ export function processTurn(
     state: newState,
     escalation,
     fallback,
-    rawOutput: output,
+    flowValidation,
+    rawOutput: correctedOutput,
   };
 }

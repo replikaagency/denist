@@ -128,6 +128,10 @@ export const ConversationStateSchema = z.object({
   // created on a later turn. Uses .default(false) so existing DB records that
   // predate this field parse correctly without migration.
   offer_appointment_pending: z.boolean().default(false),
+  // Set to true when an open appointment request exists for this conversation.
+  // Synced from DB in chat.service before processTurn so validateFlowAction
+  // can block redundant offer_appointment actions without a DB call.
+  appointment_request_open: z.boolean().default(false),
 });
 
 export type ConversationState = z.infer<typeof ConversationStateSchema>;
@@ -171,5 +175,6 @@ export function createInitialState(conversationId: string): ConversationState {
     consecutive_low_confidence: 0,
     completed: false,
     offer_appointment_pending: false,
+    appointment_request_open: false,
   };
 }
