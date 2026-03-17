@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
       return errorResponse('RATE_LIMITED', 'Too many requests. Please wait a moment.', 429);
     }
 
-    const contact = await resolveContact(parsed.data.session_token);
+    const contact = await resolveContact({ channel: 'web_chat', session_token: parsed.data.session_token });
     const { conversation, isNew } = await startOrResumeConversation(contact.id);
 
     let messages: Awaited<ReturnType<typeof getRecentMessages>>;

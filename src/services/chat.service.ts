@@ -50,7 +50,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   }
 
   // 1. Resolve contact
-  const contact = await resolveContact(session_token);
+  const contact = await resolveContact({ channel: 'web_chat', session_token });
 
   // 2. Verify conversation ownership
   const conversation = await verifyOwnership(conversation_id, contact.id);

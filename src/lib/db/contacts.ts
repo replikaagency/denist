@@ -70,6 +70,36 @@ export async function updateContact(
 }
 
 /**
+ * Find a contact by phone number.
+ * Used for channel-based contact resolution (WhatsApp, SMS).
+ */
+export async function findContactByPhone(phone: string): Promise<Contact | null> {
+  const { data, error } = await db()
+    .from('contacts')
+    .select('*')
+    .eq('phone', phone)
+    .maybeSingle();
+
+  if (error) throw AppError.database('Failed to look up contact by phone', error);
+  return data as Contact | null;
+}
+
+/**
+ * Find a contact by email address.
+ * Used for channel-based contact resolution (email channel).
+ */
+export async function findContactByEmail(email: string): Promise<Contact | null> {
+  const { data, error } = await db()
+    .from('contacts')
+    .select('*')
+    .eq('email', email)
+    .maybeSingle();
+
+  if (error) throw AppError.database('Failed to look up contact by email', error);
+  return data as Contact | null;
+}
+
+/**
  * Find a contact by email or phone (for de-duplication before creating).
  */
 export async function findContactByEmailOrPhone(

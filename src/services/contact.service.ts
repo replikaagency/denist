@@ -1,5 +1,7 @@
 import {
   findContactBySessionToken,
+  findContactByPhone,
+  findContactByEmail,
   createContact,
   updateContact,
   findContactByEmailOrPhone,
@@ -8,14 +10,44 @@ import type { Contact } from '@/types/database';
 import type { PatientFields } from '@/lib/conversation/schema';
 
 /**
- * Resolve or create a contact by session token.
- * If the token doesn't match an existing contact, creates a new anonymous one.
+ * Discriminated union of contact identifiers per channel.
+ * TypeScript enforces that the correct identifier field is present for
+ * each channel — you cannot construct { channel: 'whatsapp' } without phone.
+ *
+ * Note: the whatsapp and sms branches in resolveContact are correct code
+ * but cannot succeed at the DB level until contacts.session_token is made
+ * nullable (Phase 2). They are gated by the DB constraint intentionally.
  */
-export async function resolveContact(sessionToken: string): Promise<Contact> {
-  const existing = await findContactBySessionToken(sessionToken);
-  if (existing) return existing;
+export type ContactIdentifier =
+  | { channel: 'web_chat';  session_token: string }
+  | { channel: 'whatsapp';  phone: string }
+  | { channel: 'sms';       phone: string }
+  | { channel: 'email';     email: string };
 
-  return createContact({ session_token: sessionToken });
+/**
+ * Resolve or create a contact by channel identifier.
+ * The web_chat path is identical to the previous behaviour.
+ * Other channel paths are ready but DB-gated until Phase 2.
+ */
+export async function resolveContact(identifier: ContactIdentifier): Promise<Contact> {
+  switch (identifier.channel) {
+    case 'web_chat': {
+      const existing = await findContactBySessionToken(identifier.session_token);
+      if (existing) return existing;
+      return createContact({ session_token: identifier.session_token });
+    }
+    case 'whatsapp':
+    case 'sms': {
+      const existing = await findContactByPhone(identifier.phone);
+      if (existing) return existing;
+      return createContact({ phone: identifier.phone });
+    }
+    case 'email': {
+      const existing = await findContactByEmail(identifier.email);
+      if (existing) return existing;
+      return createContact({ email: identifier.email });
+    }
+  }
 }
 
 /**
