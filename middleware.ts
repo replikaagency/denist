@@ -10,7 +10,7 @@ export async function middleware(request: NextRequest) {
   // Protect /dashboard routes — redirect to /login if no session
   if (pathname.startsWith('/dashboard')) {
     const supabaseCookie = request.cookies.getAll().find(
-      (c) => c.name.startsWith('sb-') && c.name.endsWith('-auth-token'),
+      (c) => c.name.startsWith('sb-') && c.name.includes('-auth-token'),
     );
 
     // If no auth cookie at all, redirect immediately

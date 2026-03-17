@@ -1,33 +1,49 @@
 // =============================================================================
 // POST /api/auth/login — Staff login via Supabase Auth (email + password)
+// Returns JSON so the client can handle navigation and inline error display.
+// Cookie management is tied directly to the response object so that
+// Set-Cookie headers are correctly included in the HTTP response.
 // =============================================================================
 
 import { type NextRequest, NextResponse } from 'next/server';
-import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { createServerClient } from '@supabase/ssr';
 
 export async function POST(request: NextRequest) {
   const formData = await request.formData();
   const email = formData.get('email') as string;
   const password = formData.get('password') as string;
-  const redirectTo = (formData.get('redirect') as string) || '/dashboard';
 
   if (!email || !password) {
-    const url = new URL('/login', request.url);
-    url.searchParams.set('error', 'invalid_credentials');
-    return NextResponse.redirect(url);
+    return NextResponse.json({ ok: false, error: 'invalid_credentials' }, { status: 400 });
   }
 
-  const supabase = await createSupabaseServerClient();
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  // Build the success response first so we can attach cookies to it directly.
+  // This is the correct Supabase SSR pattern for Route Handlers — cookies must
+  // be set on the same NextResponse object that is returned to the browser.
+  const successResponse = NextResponse.json({ ok: true }, { status: 200 });
+
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
+        setAll(cookiesToSet) {
+          for (const { name, value, options } of cookiesToSet) {
+            successResponse.cookies.set(name, value, options);
+          }
+        },
+      },
+    },
+  );
+
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
   if (error) {
-    const url = new URL('/login', request.url);
-    url.searchParams.set('error', 'invalid_credentials');
-    if (redirectTo !== '/dashboard') {
-      url.searchParams.set('redirect', redirectTo);
-    }
-    return NextResponse.redirect(url);
+    return NextResponse.json({ ok: false, error: 'invalid_credentials' }, { status: 401 });
   }
 
-  return NextResponse.redirect(new URL(redirectTo, request.url));
+  return successResponse;
 }
