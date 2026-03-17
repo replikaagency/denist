@@ -59,6 +59,57 @@ export const SymptomSchema = z.object({
 export type SymptomReport = z.infer<typeof SymptomSchema>;
 
 // ---------------------------------------------------------------------------
+// Correction intent — controlled field overwrites
+// ---------------------------------------------------------------------------
+
+// Un-namespaced field names accepted from the LLM (appointment + symptom fields only).
+// Patient identity fields are intentionally excluded — they are never correctable
+// via this mechanism.
+export const CorrectionFieldEnum = z.enum([
+  // appointment sub-object
+  'service_type',
+  'preferred_date',
+  'preferred_time',
+  'preferred_provider',
+  'flexibility',
+  // symptoms sub-object
+  'description',
+  'location',
+  'duration',
+  'pain_level',
+  'triggers',
+  'prior_treatment',
+]);
+
+export type CorrectionField = z.infer<typeof CorrectionFieldEnum>;
+
+// Namespaced field names written to the audit log (domain.field format).
+export const CorrectionLogFieldEnum = z.enum([
+  'appointment.service_type',
+  'appointment.preferred_date',
+  'appointment.preferred_time',
+  'appointment.preferred_provider',
+  'appointment.flexibility',
+  'symptoms.description',
+  'symptoms.location',
+  'symptoms.duration',
+  'symptoms.pain_level',
+  'symptoms.triggers',
+  'symptoms.prior_treatment',
+]);
+
+export type CorrectionLogField = z.infer<typeof CorrectionLogFieldEnum>;
+
+const CorrectionLogEntrySchema = z.object({
+  field:     CorrectionLogFieldEnum,
+  old_value: z.unknown(),
+  new_value: z.unknown(),
+  timestamp: z.string(),  // ISO 8601
+});
+
+export type CorrectionLogEntry = z.infer<typeof CorrectionLogEntrySchema>;
+
+// ---------------------------------------------------------------------------
 // Next action the engine should take
 // ---------------------------------------------------------------------------
 
@@ -103,6 +154,29 @@ export const LLMTurnOutputSchema = z.object({
   // ── Safety flags ────────────────────────────────────────────────────────
   contains_diagnosis: z.boolean().describe("True if the reply accidentally contains a clinical diagnosis — triggers a rewrite"),
   contains_pricing:   z.boolean().describe("True if the reply states a specific price — triggers a rewrite"),
+
+  // ── Correction intent ────────────────────────────────────────────────────
+  is_correction: z.boolean()
+    .describe(
+      "Set true ONLY when the patient explicitly retracts a previously stated value. " +
+      "Required trigger signals: 'no wait', 'mejor', 'I meant', 'actually', 'no, not that'. " +
+      "Do NOT set true for a first mention of a field, a clarification, or adding new info. " +
+      "Must be false if correction_fields is empty."
+    ),
+  correction_fields: z.array(CorrectionFieldEnum)
+    .describe(
+      "Which field names the patient is correcting this turn. " +
+      "Must be empty when is_correction is false. " +
+      "Only appointment and symptom fields are valid — patient identity fields cannot be corrected via this mechanism."
+    ),
+}).superRefine((data, ctx) => {
+  if (!data.is_correction && data.correction_fields.length > 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ['correction_fields'],
+      message: 'correction_fields must be empty when is_correction is false',
+    });
+  }
 });
 
 export type LLMTurnOutput = z.infer<typeof LLMTurnOutputSchema>;
@@ -132,6 +206,14 @@ export const ConversationStateSchema = z.object({
   // Synced from DB in chat.service before processTurn so validateFlowAction
   // can block redundant offer_appointment actions without a DB call.
   appointment_request_open: z.boolean().default(false),
+  // Audit and operational metadata. Uses .passthrough() so unknown keys added
+  // in future are not silently stripped on parse/re-save.
+  metadata: z
+    .object({
+      correction_log: z.array(CorrectionLogEntrySchema).default([]),
+    })
+    .loose()
+    .default({ correction_log: [] }),
 });
 
 export type ConversationState = z.infer<typeof ConversationStateSchema>;
@@ -176,5 +258,6 @@ export function createInitialState(conversationId: string): ConversationState {
     completed: false,
     offer_appointment_pending: false,
     appointment_request_open: false,
+    metadata: { correction_log: [] },
   };
 }

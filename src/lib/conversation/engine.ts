@@ -19,6 +19,9 @@ import {
   type LLMTurnOutput,
   type ConversationState,
   type NextAction,
+  type CorrectionField,
+  type CorrectionLogEntry,
+  type CorrectionLogField,
 } from "./schema";
 import { getMissingFields, getNextFieldPrompt } from "./fields";
 
@@ -241,6 +244,147 @@ export function mergeState(
   };
 
   return newState;
+}
+
+// ---------------------------------------------------------------------------
+// CONTROLLED CORRECTION OVERWRITES
+// ---------------------------------------------------------------------------
+
+/**
+ * Explicit ownership sets — the single source of truth for routing a
+ * CorrectionField to its sub-object in ConversationState.
+ * Together they must cover all values of CorrectionFieldEnum exactly.
+ * Runtime object shape (`field in state.appointment`) is never consulted.
+ */
+const APPOINTMENT_CORRECTION_FIELDS = new Set<CorrectionField>([
+  'service_type',
+  'preferred_date',
+  'preferred_time',
+  'preferred_provider',
+  'flexibility',
+]);
+
+const SYMPTOM_CORRECTION_FIELDS = new Set<CorrectionField>([
+  'description',
+  'location',
+  'duration',
+  'pain_level',
+  'triggers',
+  'prior_treatment',
+]);
+
+/**
+ * Validates a correction value before it can overwrite existing state.
+ * Returns the validated value, or null if the value should be rejected.
+ *
+ * State-layer contract: preferred_date and preferred_time are stored as raw
+ * strings (patient free-text). Normalization to ISO date / TimeOfDay enum
+ * happens at createRequest time, not here. Validators must match that contract.
+ */
+function validateCorrectionValue(field: CorrectionField, value: unknown): unknown {
+  if (value === null || value === undefined || value === '') return null;
+
+  switch (field) {
+    case 'preferred_date':
+    case 'preferred_time':
+    case 'service_type':
+    case 'preferred_provider':
+    case 'description':
+    case 'location':
+    case 'duration':
+    case 'triggers':
+    case 'prior_treatment': {
+      // Free-text fields: non-empty string, capped at 200 chars
+      const s = String(value).trim();
+      return s.length > 0 && s.length <= 200 ? s : null;
+    }
+    case 'flexibility': {
+      const valid = ['flexible', 'somewhat_flexible', 'fixed'];
+      return valid.includes(String(value)) ? value : null;
+    }
+    case 'pain_level': {
+      const n = Number(value);
+      return Number.isInteger(n) && n >= 0 && n <= 10 ? n : null;
+    }
+  }
+}
+
+/**
+ * Applies validated correction overwrites to appointment/symptom fields.
+ * Runs unconditionally — independent of whether next_action was overridden.
+ * Only activates when output.is_correction === true and correction_fields is
+ * non-empty. Appends an audit entry to metadata.correction_log for every
+ * overwrite that lands.
+ */
+function applyValidatedCorrections(
+  state: ConversationState,
+  output: LLMTurnOutput,
+): ConversationState {
+  if (!output.is_correction || output.correction_fields.length === 0) {
+    return state;
+  }
+
+  let appointment = { ...state.appointment };
+  let symptoms    = { ...state.symptoms };
+  const newLogEntries: CorrectionLogEntry[] = [];
+
+  for (const field of output.correction_fields) {
+    const isAppointment = APPOINTMENT_CORRECTION_FIELDS.has(field);
+    const isSymptom     = SYMPTOM_CORRECTION_FIELDS.has(field);
+
+    // Belt-and-suspenders: every CorrectionField belongs to exactly one set.
+    // In practice unreachable — CorrectionFieldEnum guarantees full coverage.
+    if (!isAppointment && !isSymptom) continue;
+
+    // Resolve incoming value from the correct sub-object.
+    const incoming = isAppointment
+      ? (output.appointment as Record<string, unknown>)?.[field]
+      : (output.symptoms    as Record<string, unknown>)?.[field];
+
+    if (incoming === null || incoming === undefined || incoming === '') continue;
+
+    // Resolve current value from the working copy (not original state, in case
+    // two corrections in the same turn target the same field).
+    const current = isAppointment
+      ? (appointment as Record<string, unknown>)[field]
+      : (symptoms    as Record<string, unknown>)[field];
+
+    const validated = validateCorrectionValue(field, incoming);
+    if (validated === null) continue;    // failed validation — silent skip
+    if (validated === current) continue; // identical value — no-op
+
+    if (isAppointment) {
+      (appointment as Record<string, unknown>)[field] = validated;
+    } else {
+      (symptoms as Record<string, unknown>)[field] = validated;
+    }
+
+    // The cast is safe: field ∈ APPOINTMENT_CORRECTION_FIELDS ∪ SYMPTOM_CORRECTION_FIELDS,
+    // which maps 1:1 to CorrectionLogFieldEnum values.
+    const logField = `${isAppointment ? 'appointment' : 'symptoms'}.${field}` as CorrectionLogField;
+
+    newLogEntries.push({
+      field:     logField,
+      old_value: current,
+      new_value: validated,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  if (newLogEntries.length === 0) return state;
+
+  return {
+    ...state,
+    appointment,
+    symptoms,
+    metadata: {
+      ...state.metadata,
+      correction_log: [
+        ...(state.metadata?.correction_log ?? []),
+        ...newLogEntries,
+      ],
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -502,12 +646,18 @@ export function processTurn(
     ? { ...output, next_action: flowValidation.correctedAction }
     : output;
 
-  // 4. Conditionally merge appointment/symptoms.
-  //    Skipped when the action was overridden — prevents contaminating state
-  //    with fields from an incoherent LLM turn.
+  // 4. Apply validated corrections UNCONDITIONALLY.
+  //    Explicit corrections are independent of flow validity: if the patient
+  //    clearly retracts a previous value ("no, Friday instead") the data must
+  //    land even when next_action was overridden for an unrelated reason.
+  const correctedState = applyValidatedCorrections(partialState, output);
+
+  // 5. Conditionally apply normal fill-null merge.
+  //    Blocked when the action was overridden — prevents contaminating state
+  //    with fields from an incoherent LLM turn. Corrections already landed above.
   const newState = flowValidation.overridden
-    ? partialState
-    : safeMergeAppointment(partialState, output);
+    ? correctedState
+    : safeMergeAppointment(correctedState, output);
 
   // 5. Check deterministic escalation rules.
   const escalation = checkEscalation(correctedOutput, newState);
