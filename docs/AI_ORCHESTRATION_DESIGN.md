@@ -1,7 +1,20 @@
+> **WARNING: PROPOSED DESIGN — NOT IMPLEMENTED**
+>
+> This document describes a future 5-stage pipeline architecture (classify → decide → reply → guard → commit)
+> that has not been built. The actual production system uses a **single LLM call** that performs
+> classification, extraction, and reply generation in one structured-output call, followed by
+> deterministic post-processing in `engine.ts`. Do not use this document to understand how
+> the current system works. See `ARCHITECTURE.md`, `PROJECT_STATUS.md`, and `CHANGELOG.md`
+> for the real implementation.
+>
+> This document may be used as a reference for a future refactor.
+
+---
+
 # AI Orchestration Design — Dental Reception AI
 
-> **Status**: Production design  
-> **Date**: 2026-03-16  
+> **Status**: Proposed design (not implemented)
+> **Date**: 2026-03-16
 > **Scope**: Turn handling, safety, auditability, configurability, testing
 
 ---
