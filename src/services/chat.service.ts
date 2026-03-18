@@ -1,5 +1,5 @@
 import { insertMessage, getRecentMessages, type MessageInsertInput } from '@/lib/db/messages';
-import { updateConversation, getConversationById } from '@/lib/db/conversations';
+import { updateConversation } from '@/lib/db/conversations';
 import { callLLM, type ChatMessage } from '@/lib/ai/completion';
 import { buildSystemPrompt, getClinicConfig, FEW_SHOT_BY_INTENT } from '@/lib/conversation/prompts';
 import { getMissingFields } from '@/lib/conversation/fields';
@@ -19,7 +19,7 @@ import { ensureLead } from './lead.service';
 import { createRequest, findOpenAppointmentRequest, isAppointmentDataComplete } from './appointment.service';
 import { createHandoff } from './handoff.service';
 
-import type { Contact, Conversation, Message } from '@/types/database';
+import type { Contact, Conversation, Lead, Message } from '@/types/database';
 
 export interface ChatTurnInput {
   session_token: string;
@@ -31,7 +31,8 @@ export interface ChatTurnResult {
   message: Message;
   contact: Contact;
   conversation: Conversation;
-  turnResult: TurnResult;
+  /** null when the LLM output failed to parse and a fallback message was sent */
+  turnResult: TurnResult | null;
 }
 
 /**
@@ -58,11 +59,11 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   // 3. Guard: conversation must be AI-active
   if (!conversation.ai_enabled) {
     throw AppError.conflict(
-      'This conversation has been handed off to a human agent. Please wait for a response.',
+      'Esta conversación ya ha sido transferida a un agente humano. Por favor, espera su respuesta.',
     );
   }
   if (conversation.status === 'resolved' || conversation.status === 'abandoned') {
-    throw AppError.conflict('This conversation is closed.');
+    throw AppError.conflict('Esta conversación está cerrada.');
   }
 
   // 4. Persist patient message
@@ -85,6 +86,20 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   // cancelled/completed externally by staff. Result reused in appointment block.
   const preExistingRequest = await findOpenAppointmentRequest(conversation_id);
   state.appointment_request_open = !!preExistingRequest;
+
+  // If no open request exists but state.completed is true, the appointment was
+  // cancelled / completed / no_showed externally by staff after the flag was
+  // persisted.  Reset completed so deriveFlowStage does not return 'terminal'
+  // and the patient can re-enter the booking flow on this turn.
+  //
+  // This is safe on the normal completion path because:
+  //   - Turn N:   appointment created → preExistingRequest found → reset does NOT fire
+  //   - Turn N+1: completed set to true inside processTurn → preExistingRequest still
+  //               found (row unchanged) → reset does NOT fire
+  //   - Post-cancellation: preExistingRequest=null AND completed=true → reset fires ✓
+  if (!preExistingRequest && state.completed) {
+    state.completed = false;
+  }
 
   // 7. Build system prompt
   const systemPrompt = buildSystemPrompt(getClinicConfig(), state);
@@ -122,8 +137,43 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   // 11. Process turn through the conversation engine
   const turnResult = processTurn(llmResult.text, state);
 
+  // Phase 3: LLM parse failure — insert a fallback message instead of throwing,
+  // so the patient message already persisted is not left orphaned.
   if ('error' in turnResult) {
-    throw AppError.ai(`Conversation engine error: ${turnResult.error}`);
+    console.error('[ChatService] LLM parse failure', {
+      conversation_id,
+      error: turnResult.error,
+    });
+    const fallbackMessage = await insertMessage({
+      conversation_id,
+      role: 'ai',
+      content: 'Lo siento, no te he entendido bien. ¿Podrías repetirlo de otra forma?',
+      metadata: { type: 'parse_error_fallback' },
+    });
+    return {
+      message: fallbackMessage,
+      contact,
+      conversation,
+      turnResult: null,
+    };
+  }
+
+  // Phase 5: log unexpected flow overrides (engine corrected LLM's next_action)
+  if (turnResult.flowValidation.overridden) {
+    console.warn('[ChatService] unexpected_flow', {
+      conversation_id,
+      original_action: turnResult.flowValidation.originalAction,
+      corrected_action: turnResult.flowValidation.correctedAction,
+      reason: turnResult.flowValidation.reason,
+    });
+  }
+
+  // Phase 5: log when a correction was applied this turn
+  if (turnResult.rawOutput.is_correction && turnResult.rawOutput.correction_fields.length > 0) {
+    console.log('[ChatService] correction_applied', {
+      conversation_id,
+      correction_fields: turnResult.rawOutput.correction_fields,
+    });
   }
 
   // 12. Execute side-effects
@@ -134,20 +184,32 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
 
   if (hasPatientFields) {
     const enriched = await enrichContact(contact.id, turnResult.rawOutput.patient_fields);
-    if (enriched) updatedContact = enriched;
+    if (enriched) {
+      updatedContact = enriched;
+    } else {
+      // Phase 3: null means a duplicate phone/email was detected — log and continue.
+      console.warn('[ChatService] enrichContact returned null — possible duplicate phone/email', {
+        conversation_id,
+        contact_id: contact.id,
+      });
+    }
   }
 
+  // Phase 4: hoist lead — ensureLead is called at most once per turn.
   const isIdentified = updatedContact.first_name && (updatedContact.phone || updatedContact.email);
+  let lead: Lead | null = null;
   if (isIdentified) {
-    const lead = await ensureLead(contact.id);
+    lead = await ensureLead(contact.id);
     await updateConversation(conversation_id, { lead_id: lead.id });
   }
 
-  // Appointment request creation — three triggers (all validated by flow controller):
-  //   1. `offer_appointment`  — canonical path.
-  //   2. `confirm_details`    — LLM confirmed before offering (scheduling intent only).
-  //   3. `state.completed`    — engine backstop: all fields filled.
-  //   deferred               — offer_appointment_pending from a prior turn.
+  // Appointment request creation — four triggers (all validated by flow controller):
+  //   1. `offer_appointment`         — canonical path.
+  //   2. `confirm_details`           — LLM confirmed before offering (scheduling intent only).
+  //   3. `state.completed`           — engine backstop: all fields filled.
+  //   4. isCorrectionWithOpenRequest — patient corrected a field; enrich the existing row
+  //                                    even when next_action is 'continue'.
+  //   deferred                       — offer_appointment_pending from a prior turn.
   const isSchedulingIntent =
     turnResult.state.current_intent === 'appointment_request' ||
     turnResult.state.current_intent === 'appointment_reschedule';
@@ -156,26 +218,45 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     turnResult.rawOutput.next_action === 'offer_appointment' ||
     (turnResult.rawOutput.next_action === 'confirm_details' && isSchedulingIntent);
 
-  const engineCompletedAppointment = turnResult.state.completed && isSchedulingIntent;
-
   const deferredAppointment = turnResult.state.offer_appointment_pending && isIdentified;
 
   // preExistingRequest was fetched in step 6.5 (or null if flag was already true).
   // hasOpenRequest is true when a request was found pre-turn OR the flag was
   // already persisted from a previous turn.
+  // Declared before engineCompletedAppointment — the guard depends on it.
   const hasOpenRequest = isIdentified &&
     (!!preExistingRequest || turnResult.state.appointment_request_open);
 
   const appointmentDataReady = isAppointmentDataComplete(turnResult.state.appointment);
 
-  if ((appointmentActionFired || engineCompletedAppointment || deferredAppointment) && isIdentified) {
+  // Only act as a backstop when the booking is complete but no appointment row
+  // exists yet (e.g. completed was set but creation was deferred due to missing
+  // identity).  Adding !hasOpenRequest prevents this from firing on every turn
+  // once completed=true — it was never meant to run when a request is already open.
+  const engineCompletedAppointment = turnResult.state.completed && isSchedulingIntent && !hasOpenRequest;
+
+  // Explicit correction trigger: fires when the patient corrected one or more
+  // appointment/symptom fields AND an open request already exists.
+  // Requires hasOpenRequest so createRequest() always takes the enrich path —
+  // this trigger cannot create a new appointment row.
+  // Uses rawOutput (not state) because is_correction / correction_fields are
+  // LLM output fields, not persisted ConversationState fields.
+  const isCorrectionWithOpenRequest =
+    turnResult.rawOutput.is_correction === true &&
+    turnResult.rawOutput.correction_fields.length > 0 &&
+    hasOpenRequest === true;
+
+  if ((appointmentActionFired || engineCompletedAppointment || deferredAppointment || isCorrectionWithOpenRequest) && isIdentified) {
     if (hasOpenRequest || appointmentDataReady) {
-      const lead = await ensureLead(contact.id);
+      // lead is guaranteed non-null: isIdentified gate above ensures it was set.
       await createRequest({
         contactId: contact.id,
         conversationId: conversation_id,
-        leadId: lead.id,
+        leadId: lead!.id,
         appointment: turnResult.state.appointment,
+        correctionFields: turnResult.rawOutput.is_correction
+          ? turnResult.rawOutput.correction_fields
+          : undefined,
       });
       turnResult.state.offer_appointment_pending = false;
       turnResult.state.appointment_request_open = true;
@@ -221,11 +302,8 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     },
   });
 
-  // 14. Save updated state
-  await saveState(conversation_id, turnResult.state);
-
-  // 15. Reload conversation for response
-  const finalConversation = await getConversationById(conversation_id);
+  // 14. Save updated state — returns updated Conversation, eliminating a second DB read.
+  const finalConversation = await saveState(conversation_id, turnResult.state);
 
   return {
     message: aiMessage,

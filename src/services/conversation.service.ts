@@ -36,15 +36,16 @@ export async function loadState(conversationId: string): Promise<ConversationSta
 
 /**
  * Persist the updated conversation state back to the metadata column.
+ * Returns the updated Conversation so callers can avoid a redundant read.
  */
 export async function saveState(
   conversationId: string,
   state: ConversationState,
-): Promise<void> {
+): Promise<Conversation> {
   const conversation = await getConversationById(conversationId);
   const existingMetadata = (conversation.metadata ?? {}) as Record<string, unknown>;
 
-  await updateConversation(conversationId, {
+  return updateConversation(conversationId, {
     metadata: { ...existingMetadata, conversation_state: state },
   });
 }

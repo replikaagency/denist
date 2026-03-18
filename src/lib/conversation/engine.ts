@@ -150,8 +150,8 @@ export function applyFallbacks(
     return {
       applied: true,
       rewrittenReply:
-        "I want to make sure I help you the right way. Could you tell me a bit more about what you're looking for? " +
-        "For example, are you looking to book an appointment, asking about a service, or reporting a dental concern?",
+        "Quiero asegurarme de ayudarte bien. ¿Podrías contarme un poco más sobre lo que necesitas? " +
+        "Por ejemplo, ¿quieres reservar una cita, tienes alguna pregunta sobre nuestros servicios o tienes alguna molestia dental?",
       reason: "Could not classify intent — using guided clarification.",
     };
   }
@@ -161,8 +161,8 @@ export function applyFallbacks(
     return {
       applied: true,
       rewrittenReply:
-        "I appreciate the question, but I'm only able to help with dental-related topics — " +
-        "things like appointments, services, insurance, or dental concerns. Is there anything along those lines I can help with?",
+        "Te agradezco la pregunta, pero solo puedo ayudarte con temas relacionados con la salud dental — " +
+        "citas, servicios, seguros o consultas dentales. ¿Hay algo en ese sentido en lo que pueda ayudarte?",
       reason: "Out-of-scope message received — redirecting to dental topics.",
     };
   }
@@ -179,13 +179,19 @@ export function applyFallbacks(
     "i'll find",
     "hang tight",
     "get back to you with",
+    "déjame comprobar",
+    "voy a comprobar",
+    "te aviso",
+    "busco un hueco",
+    "miro la disponibilidad",
+    "compruebo",
   ];
   const replyLower = output.reply.toLowerCase();
   if (isSchedulingIntent && isCompletionAction && misleadingPhrases.some((p) => replyLower.includes(p))) {
     return {
       applied: true,
       rewrittenReply:
-        "I've got your request. Your preference is noted, and our team will check availability and reach out to confirm your appointment. Is there anything else I can help with?",
+        "Tu solicitud ya está registrada. Hemos anotado tu preferencia y el equipo se pondrá en contacto contigo para confirmar la disponibilidad. ¿Hay algo más en lo que pueda ayudarte?",
       reason: "Reply implied checking availability — replaced with clear final confirmation.",
     };
   }
@@ -194,14 +200,14 @@ export function applyFallbacks(
 }
 
 function stripDiagnosisFromReply(reply: string): string {
-  return reply + "\n\n(Note: I'm not able to provide a diagnosis. I'd recommend scheduling an appointment so a dentist can properly evaluate this for you.)";
+  return reply + "\n\n(Nota: No puedo proporcionar un diagnóstico. Te recomendaría pedir cita para que el dentista pueda evaluarlo correctamente.)";
 }
 
 function stripPricingFromReply(reply: string): string {
   return reply.replace(
-    /\$\d[\d,]*(\.\d{2})?/g,
-    "[contact our office for pricing]"
-  ) + "\n\nFor an accurate cost estimate, our team can check your specific insurance benefits and treatment needs.";
+    /[\$€]\d[\d.,]*(\.\d{2})?/g,
+    "[consulta el precio con la clínica]"
+  ) + "\n\nPara un presupuesto exacto, nuestro equipo puede revisar tu cobertura de seguro y las necesidades de tratamiento.";
 }
 
 // ---------------------------------------------------------------------------
@@ -697,20 +703,28 @@ export function processTurn(
     newState.escalation_reason = escalation.reason;
 
     if (escalation.type === "emergency") {
-      reply += "\n\nI'm connecting you with our emergency team right now. " +
-        "If you feel this is life-threatening, please call 911 immediately.";
+      reply += "\n\nEstoy contactando ahora mismo con nuestro equipo de urgencias. " +
+        "Si crees que es una emergencia con riesgo vital, llama al 112 inmediatamente.";
     } else {
-      reply += "\n\nLet me connect you with a team member who can help you further. " +
-        "One moment please.";
+      reply += "\n\nDéjame conectarte con un miembro de nuestro equipo que podrá ayudarte mejor. " +
+        "Un momento, por favor.";
     }
   }
 
   // 9. If no escalation and all required fields are filled, nudge toward completion.
+  //    Guard: only fire for scheduling intents. For intents with no FIELD_REQUIREMENTS
+  //    entry (e.g. clinic_info, gratitude), getMissingFields returns [] unconditionally,
+  //    which would falsely set completed=true and lock the conversation into terminal stage.
+  const isSchedulingIntentForCompletion =
+    newState.current_intent === "appointment_request" ||
+    newState.current_intent === "appointment_reschedule";
+
   if (
+    isSchedulingIntentForCompletion &&
+    newState.current_intent &&        // narrows Intent | null → Intent for getMissingFields
     !escalation.shouldEscalate &&
     !fallback.applied &&
-    correctedOutput.next_action === "ask_field" &&
-    newState.current_intent
+    correctedOutput.next_action === "ask_field"
   ) {
     const missing = getMissingFields(
       newState.current_intent,

@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.9.1] — 2026-03-18
+
+### Fixed
+
+- **`fields.ts` prompts Spanish-ized** (`lib/conversation/fields.ts`): All `COMMON_PROMPTS` and the `post_treatment_concern` override were English and reached patients via `correctedReply` when the flow controller overrode the LLM. All 16 prompts + the fallback string are now natural Spanish (Spain). TypeScript: clean.
+
+- **Spanish service names now resolve correctly** (`services/appointment.service.ts`): `SERVICE_TYPE_TO_APPOINTMENT_TYPE` extended with ~60 Spanish variants covering new patient, cleaning/checkup, emergency, whitening, implants, orthodontics, and common other treatments. `resolveAppointmentType('limpieza dental')` now returns `'checkup'` instead of `'other'`. English entries preserved.
+
+- **`completed=true` flow-locking bug** (`lib/conversation/engine.ts`): The backstop that sets `completed=true` now only fires for scheduling intents (`appointment_request`, `appointment_reschedule`). Previously, intents with no `FIELD_REQUIREMENTS` entry (e.g. `gratitude`, `clinic_info`) would have `getMissingFields()` return `[]` and incorrectly set `completed=true`, permanently locking the conversation into `terminal` stage.
+
+- **Notes unbounded growth** (`services/appointment.service.ts`): The `buildEnrichPatch` notes-fallback merge now uses `!existing.notes.includes('Patient preferred')` as its deduplication guard instead of an exact string match. This prevents accumulation of multiple fallback entries when the patient mentions different unparseable date/time values across turns — the first fallback written is preserved; subsequent turns do not append.
+
+## [0.9.0] — 2026-03-18
+
+### Added
+
+- **Full Spanish localization** (`lib/conversation/prompts.ts`, `lib/conversation/engine.ts`, `config/constants.ts`): All system prompt layers, few-shot examples, fallback replies, escalation appends, and the AI greeting are now in Spanish (Spain, tú form). Fallback 5 detection extended with Spanish phrases ("déjame comprobar", "miro la disponibilidad", etc.). Pricing regex now strips both `$` and `€` amounts.
+
+- **Almería clinic config** (`lib/conversation/prompts.ts`): `DEFAULT_CLINIC_CONFIG` updated to Clínica Dental Sonrisa Almería with Spanish insurance providers, services, and providers. `ClinicConfig` extended with optional `timezone`, `appointment_duration`, `language` fields; env-var overrides added (`CLINIC_TIMEZONE`, `CLINIC_APPOINTMENT_DURATION`, `CLINIC_LANGUAGE`).
+
+### Fixed
+
+- **LLM parse failure no longer orphans the patient message** (`services/chat.service.ts`): If `processTurn` returns a parse error the service now inserts a fallback AI message ("Lo siento, no te he entendido bien…") and returns early instead of throwing, so the already-persisted patient message is never left without a reply. `ChatTurnResult.turnResult` is now `TurnResult | null`.
+
+- **`enrichContact` null no longer silently discarded** (`services/chat.service.ts`): When `enrichContact` returns `null` (duplicate phone/email detected) a `console.warn` is now emitted with `conversation_id` and `contact_id`.
+
+- **Race recovery failure now logged** (`services/appointment.service.ts`): If the post-constraint-violation re-query in `createRequest` still finds no winner, `console.error` is emitted before re-throwing.
+
+- **Redundant `getConversationById` eliminated** (`services/conversation.service.ts`, `services/chat.service.ts`): `saveState` now returns the updated `Conversation` (from `updateConversation`), removing the extra DB read that previously followed every turn.
+
+- **`ensureLead` called at most once per turn** (`services/chat.service.ts`): `lead` is hoisted before the identity block and reused in the appointment block, eliminating the duplicate `ensureLead` call on turns that fire both.
+
+### Observability
+
+- **Structured logs added** (`services/chat.service.ts`, `services/appointment.service.ts`):
+  - `[ChatService] correction_applied` — when `is_correction=true` after `processTurn`
+  - `[ChatService] unexpected_flow` — when `flowValidation.overridden=true`
+  - `[AppointmentService] appointment_created` — on new appointment row
+  - `[AppointmentService] appointment_updated` — on enrichment of existing row (both normal and race-recovery paths)
+
 ## [0.8.8] — 2026-03-17
 
 ### Fixed

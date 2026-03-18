@@ -40,6 +40,51 @@ function normalizeTimeOfDay(raw: string | null | undefined): TimeOfDay | null {
 
   if (VALID_TIME_OF_DAY.has(s)) return s as TimeOfDay;
 
+  // Accent-stripped copy for robust Spanish matching.
+  // Maps ñ→n, á→a, é→e, í→i, ó→o, ú→u so patterns work regardless of whether
+  // the LLM included diacritics (e.g. "mañana" and "manana" both become "manana").
+  const sn = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  // ── Spanish time-of-day phrases ─────────────────────────────────────────
+  //
+  // Checked before English keywords so Spanish input never falls through to
+  // an incorrect English match.
+  //
+  // "mañana" ambiguity — "mañana" alone means "tomorrow" (a date), NOT morning.
+  // The phrases below are all ANCHORED with "por la", "de la", "las", "primera
+  // hora", or "temprano", so bare "mañana" (= normalized "manana") never matches.
+  // "mañana por la mañana" hits the 'por la manana' branch ✓
+  // "mañana" alone → none of these fire → falls through → returns null ✓
+
+  // Morning
+  if (
+    sn.includes('por la manana') ||   // por la mañana / por las mañanas
+    sn.includes('de la manana') ||    // de la mañana / a las 9 de la mañana (belt)
+    sn.includes('por las mananas') || // por las mañanas
+    sn.includes('a primera hora') ||  // a primera hora
+    sn.includes('manana temprano') || // mañana temprano (LLM extracted as time-of-day)
+    sn.includes('temprano')           // temprano / muy temprano
+  ) return 'morning';
+
+  // Afternoon
+  if (
+    sn.includes('por la tarde') ||    // por la tarde / por las tardes
+    sn.includes('de la tarde') ||     // de la tarde
+    sn.includes('por las tardes') ||  // por las tardes
+    sn.includes('mediodia') ||        // mediodía / a mediodía / al mediodía
+    sn.includes('medio dia')          // a medio día
+  ) return 'afternoon';
+
+  // Evening
+  if (
+    sn.includes('por la noche') ||    // por la noche
+    sn.includes('de la noche') ||     // de la noche / a las 10 de la noche (belt)
+    sn.includes('por las noches') ||  // por las noches
+    sn.includes('ultima hora')        // a última hora / última hora
+  ) return 'evening';
+
+  // ── English keywords ─────────────────────────────────────────────────────
+
   // Morning: explicit keyword or AM hours 6-11
   if (s.includes('morning') || /\b([6-9]|1[01])\s*am\b/.test(s)) return 'morning';
 
@@ -127,13 +172,21 @@ function normalizePreferredDate(raw: string | null | undefined): string | null {
 }
 
 const SERVICE_TYPE_TO_APPOINTMENT_TYPE: Record<string, AppointmentType> = {
-  // New patient variants
+  // ── New patient (English) ────────────────────────────────────────────────
   'new patient': 'new_patient',
   'new_patient': 'new_patient',
   'new patient exam': 'new_patient',
   'new patient visit': 'new_patient',
 
-  // Check-up / cleaning variants
+  // ── New patient (Spanish) ────────────────────────────────────────────────
+  'nuevo paciente': 'new_patient',
+  'paciente nuevo': 'new_patient',
+  'primera visita': 'new_patient',
+  'primera vez': 'new_patient',
+  'primera consulta': 'new_patient',
+  'primera cita': 'new_patient',
+
+  // ── Check-up / cleaning (English) ───────────────────────────────────────
   cleaning: 'checkup',
   checkup: 'checkup',
   'check-up': 'checkup',
@@ -144,26 +197,75 @@ const SERVICE_TYPE_TO_APPOINTMENT_TYPE: Record<string, AppointmentType> = {
   'routine checkup': 'checkup',
   'routine check-up': 'checkup',
 
-  // Emergency variants
+  // ── Check-up / cleaning (Spanish) ───────────────────────────────────────
+  limpieza: 'checkup',
+  'limpieza dental': 'checkup',
+  'limpieza de boca': 'checkup',
+  'limpieza bucal': 'checkup',
+  'limpiar los dientes': 'checkup',
+  'limpieza y revision': 'checkup',
+  'limpieza y revisión': 'checkup',
+  revisión: 'checkup',
+  revision: 'checkup',
+  'revisión dental': 'checkup',
+  'revision dental': 'checkup',
+  'revisión general': 'checkup',
+  'revision general': 'checkup',
+  chequeo: 'checkup',
+  'chequeo dental': 'checkup',
+  control: 'checkup',
+  'control dental': 'checkup',
+
+  // ── Emergency (English) ──────────────────────────────────────────────────
   'emergency exam': 'emergency',
   emergency: 'emergency',
   'dental emergency': 'emergency',
   'tooth emergency': 'emergency',
 
-  // Whitening variants
+  // ── Emergency (Spanish) ──────────────────────────────────────────────────
+  urgencia: 'emergency',
+  urgencias: 'emergency',
+  'urgencia dental': 'emergency',
+  'urgencias dentales': 'emergency',
+  emergencia: 'emergency',
+  'emergencia dental': 'emergency',
+  dolor: 'emergency',
+  'dolor de muela': 'emergency',
+  'dolor de muelas': 'emergency',
+  'dolor de diente': 'emergency',
+  'dolor dental': 'emergency',
+
+  // ── Whitening (English) ──────────────────────────────────────────────────
   whitening: 'whitening',
   'teeth whitening': 'whitening',
   'tooth whitening': 'whitening',
   bleaching: 'whitening',
 
-  // Implant variants
+  // ── Whitening (Spanish) ──────────────────────────────────────────────────
+  blanqueamiento: 'whitening',
+  'blanqueamiento dental': 'whitening',
+  'blanqueamiento de dientes': 'whitening',
+  'blanquear dientes': 'whitening',
+  'blanquear los dientes': 'whitening',
+  aclaramiento: 'whitening',
+  'aclaramiento dental': 'whitening',
+
+  // ── Implants (English) ───────────────────────────────────────────────────
   implant: 'implant_consult',
   'implant consult': 'implant_consult',
   'implant consultation': 'implant_consult',
   'dental implant': 'implant_consult',
   'implant_consult': 'implant_consult',
 
-  // Orthodontic variants
+  // ── Implants (Spanish) ───────────────────────────────────────────────────
+  implante: 'implant_consult',
+  implantes: 'implant_consult',
+  'implante dental': 'implant_consult',
+  'implantes dentales': 'implant_consult',
+  implantologia: 'implant_consult',
+  implantología: 'implant_consult',
+
+  // ── Orthodontics (English) ───────────────────────────────────────────────
   orthodontic: 'orthodontic_consult',
   'orthodontic consult': 'orthodontic_consult',
   'orthodontic consultation': 'orthodontic_consult',
@@ -173,6 +275,54 @@ const SERVICE_TYPE_TO_APPOINTMENT_TYPE: Record<string, AppointmentType> = {
   invisalign: 'orthodontic_consult',
   aligner: 'orthodontic_consult',
   aligners: 'orthodontic_consult',
+
+  // ── Orthodontics (Spanish) ───────────────────────────────────────────────
+  ortodoncia: 'orthodontic_consult',
+  brackets: 'orthodontic_consult',
+  bracket: 'orthodontic_consult',
+  aparato: 'orthodontic_consult',
+  'aparato dental': 'orthodontic_consult',
+  aparatos: 'orthodontic_consult',
+  'aparatos dentales': 'orthodontic_consult',
+  alineadores: 'orthodontic_consult',
+  alineador: 'orthodontic_consult',
+  'invisalign ortodoncia': 'orthodontic_consult',
+
+  // ── Other treatments (Spanish) — no dedicated type yet; map explicitly so
+  //    intent is clear and future enum additions can update just this table ─
+  empaste: 'other',
+  empastes: 'other',
+  obturación: 'other',
+  obturacion: 'other',
+  caries: 'other',
+  'tapar caries': 'other',
+  extracción: 'other',
+  extraccion: 'other',
+  'extracción dental': 'other',
+  'extraccion dental': 'other',
+  'sacar muela': 'other',
+  'sacar muelas': 'other',
+  'sacar diente': 'other',
+  'muela del juicio': 'other',
+  'muelas del juicio': 'other',
+  cordales: 'other',
+  endodoncia: 'other',
+  endodoncias: 'other',
+  'matar nervio': 'other',
+  'matar el nervio': 'other',
+  conductos: 'other',
+  'tratamiento de conductos': 'other',
+  corona: 'other',
+  coronas: 'other',
+  funda: 'other',
+  fundas: 'other',
+  porcelana: 'other',
+  periodoncia: 'other',
+  'encías': 'other',
+  encias: 'other',
+  piorrea: 'other',
+  carillas: 'other',
+  'carillas de porcelana': 'other',
 };
 
 function resolveAppointmentType(serviceType: string | null): AppointmentType {
@@ -270,32 +420,79 @@ export async function findOpenAppointmentRequest(
 /**
  * Build a patch that fills in missing fields on an existing row using better
  * data from a later turn.  Rules:
+ *
+ * Normal (fill-null) path — runs for every trigger:
  *   - appointment_type: upgrade from 'other' only — never overwrite a
  *     specific type with a different specific type.
- *   - preferred_date / preferred_time_of_day / notes: fill in if currently
- *     null and the new value is non-null.
+ *   - preferred_date / preferred_time_of_day / notes: fill in if currently null.
+ *
+ * Correction (overwrite) path — only when correctionFields is non-empty:
+ *   - preferred_date:       overwrite if 'preferred_date' is in correctionFields
+ *                           and the resolved value differs from the existing one.
+ *   - preferred_time_of_day: overwrite if 'preferred_time' is in correctionFields
+ *                           (note: correction field name is 'preferred_time';
+ *                            DB column is preferred_time_of_day).
+ *   - appointment_type:     overwrite if 'service_type' is in correctionFields
+ *                           and the resolved type is specific (not 'other').
+ *   - notes:                overwrite if 'preferred_provider' is in correctionFields
+ *                           (provider is the only field that maps 1:1 to notes).
  */
 function buildEnrichPatch(
   existing: AppointmentRequest,
   resolved: ResolvedFields,
+  correctionFields?: string[],
 ): Partial<ResolvedFields> | null {
   const patch: Partial<ResolvedFields> = {};
+  const corrected = (field: string) => correctionFields?.includes(field) ?? false;
 
+  // appointment_type — fill from 'other' (normal) or overwrite if service_type corrected
   if (existing.appointment_type === 'other' && resolved.appointment_type !== 'other') {
     patch.appointment_type = resolved.appointment_type;
+  } else if (
+    corrected('service_type') &&
+    resolved.appointment_type !== 'other' &&
+    resolved.appointment_type !== existing.appointment_type
+  ) {
+    patch.appointment_type = resolved.appointment_type;
   }
+
+  // preferred_date — fill-null (normal) or overwrite if corrected
   if (!existing.preferred_date && resolved.preferred_date) {
     patch.preferred_date = resolved.preferred_date;
+  } else if (
+    corrected('preferred_date') &&
+    resolved.preferred_date &&
+    resolved.preferred_date !== existing.preferred_date
+  ) {
+    patch.preferred_date = resolved.preferred_date;
   }
+
+  // preferred_time_of_day — fill-null (normal) or overwrite if corrected
+  // correction_fields uses 'preferred_time'; DB column is preferred_time_of_day
   if (!existing.preferred_time_of_day && resolved.preferred_time_of_day) {
     patch.preferred_time_of_day = resolved.preferred_time_of_day;
+  } else if (
+    corrected('preferred_time') &&
+    resolved.preferred_time_of_day &&
+    resolved.preferred_time_of_day !== existing.preferred_time_of_day
+  ) {
+    patch.preferred_time_of_day = resolved.preferred_time_of_day;
   }
+
+  // notes — fill-null (normal)
   if (!existing.notes && resolved.notes) {
     patch.notes = resolved.notes;
   }
-  // Merge fallback when existing notes already has content (e.g. provider) but we have new raw time/date
-  if (existing.notes && resolved.notesFallback && !existing.notes.includes(resolved.notesFallback)) {
+  // Merge fallback when existing notes already has content (e.g. provider) but we have
+  // new raw time/date that could not be normalized. Prefix check ('Patient preferred')
+  // prevents accumulation across turns: once any fallback entry is present, subsequent
+  // turns with different unparseable values do not append a second entry.
+  if (existing.notes && resolved.notesFallback && !existing.notes.includes('Patient preferred')) {
     patch.notes = `${existing.notes}; ${resolved.notesFallback}`;
+  }
+  // Overwrite notes only when preferred_provider is explicitly corrected
+  if (corrected('preferred_provider') && resolved.notes !== existing.notes) {
+    patch.notes = resolved.notes;
   }
 
   return Object.keys(patch).length > 0 ? patch : null;
@@ -333,13 +530,25 @@ export async function createRequest(input: {
   conversationId: string;
   leadId: string;
   appointment: Partial<AppointmentDetails>;
+  /** When the turn is a correction, pass the LLM's correction_fields so
+   *  buildEnrichPatch can overwrite existing non-null values instead of
+   *  skipping them.  Omit (or pass undefined) on normal turns. */
+  correctionFields?: string[];
 }): Promise<AppointmentRequest> {
   const resolved = resolveFields(input.appointment);
 
   const existing = await getOpenAppointmentRequestForConversation(input.conversationId);
   if (existing) {
-    const patch = buildEnrichPatch(existing, resolved);
-    if (patch) return enrichAppointmentRequest(existing.id, patch);
+    const patch = buildEnrichPatch(existing, resolved, input.correctionFields);
+    if (patch) {
+      const updated = await enrichAppointmentRequest(existing.id, patch);
+      console.log('[AppointmentService] appointment_updated', {
+        appointment_id: existing.id,
+        conversationId: input.conversationId,
+        patch_fields: Object.keys(patch),
+      });
+      return updated;
+    }
     return existing;
   }
 
@@ -352,16 +561,35 @@ export async function createRequest(input: {
       lead_id: input.leadId,
       ...dbFields,
     });
+    console.log('[AppointmentService] appointment_created', {
+      appointment_id: request.id,
+      conversationId: input.conversationId,
+      contactId: input.contactId,
+      appointment_type: resolved.appointment_type,
+    });
   } catch (err) {
     // A concurrent request may have inserted between our check and this insert.
     // Re-query and apply enrichment to the winner rather than propagating the
     // constraint error.
     const raceWinner = await getOpenAppointmentRequestForConversation(input.conversationId);
     if (raceWinner) {
-      const patch = buildEnrichPatch(raceWinner, resolved);
-      if (patch) return enrichAppointmentRequest(raceWinner.id, patch);
+      const patch = buildEnrichPatch(raceWinner, resolved, input.correctionFields);
+      if (patch) {
+        const updated = await enrichAppointmentRequest(raceWinner.id, patch);
+        console.log('[AppointmentService] appointment_updated', {
+          appointment_id: raceWinner.id,
+          conversationId: input.conversationId,
+          patch_fields: Object.keys(patch),
+        });
+        return updated;
+      }
       return raceWinner;
     }
+    console.error('[AppointmentService] createRequest race recovery failed', {
+      conversationId: input.conversationId,
+      contactId: input.contactId,
+      error: err,
+    });
     throw err;
   }
 

@@ -37,37 +37,37 @@ export interface FieldRequirements {
 
 const COMMON_PROMPTS: Record<string, string> = {
   "patient.full_name":
-    "Could I get your full name, please?",
+    "¿Me dices tu nombre completo?",
   "patient.phone":
-    "What's the best phone number to reach you at?",
+    "¿A qué número te podemos llamar?",
   "patient.email":
-    "Do you have an email address we can send a confirmation to?",
+    "¿Tienes un correo electrónico donde mandarte la confirmación?",
   "patient.date_of_birth":
-    "And your date of birth? We use it to look up your chart.",
+    "¿Y tu fecha de nacimiento? La necesitamos para localizar tu ficha.",
   "patient.new_or_returning":
-    "Have you been to our office before, or would this be your first visit?",
+    "¿Es la primera vez que vienes a la clínica o ya eres paciente nuestro/a?",
   "patient.insurance_provider":
-    "Which dental insurance provider are you with?",
+    "¿Con qué compañía de seguros estás?",
   "patient.insurance_member_id":
-    "Could you share your insurance member ID? It's usually on the front of your card.",
+    "¿Puedes decirme tu número de afiliado? Lo encontrarás en tu tarjeta de seguro.",
   "appointment.service_type":
-    "What type of appointment are you looking for — a cleaning, checkup, or something else?",
+    "¿Para qué tipo de tratamiento quieres la cita? ¿Una limpieza, revisión, o algo distinto?",
   "appointment.preferred_date":
-    "Do you have a preferred date in mind?",
+    "¿Qué día te vendría mejor?",
   "appointment.preferred_time":
-    "Any time of day that works best — morning, afternoon, or a specific time?",
+    "¿En qué franja horaria prefieres? ¿Mañana, tarde, o tienes un horario concreto?",
   "appointment.preferred_provider":
-    "Is there a particular dentist you'd like to see?",
+    "¿Quieres que sea con algún dentista en concreto?",
   "symptoms.description":
-    "Can you describe what you're experiencing?",
+    "¿Puedes contarme qué te está pasando?",
   "symptoms.location":
-    "Where in your mouth is the issue — can you point to the general area?",
+    "¿En qué zona de la boca tienes la molestia?",
   "symptoms.duration":
-    "How long has this been going on?",
+    "¿Desde cuándo lo tienes?",
   "symptoms.pain_level":
-    "On a scale of 0 to 10, how would you rate the pain?",
+    "Del 0 al 10, ¿cómo puntuarías el dolor?",
   "symptoms.triggers":
-    "Does anything make it worse — like hot or cold drinks, or biting down?",
+    "¿Hay algo que lo empeore, como el frío, el calor o morder?",
 };
 
 // ---------------------------------------------------------------------------
@@ -175,7 +175,7 @@ export const FIELD_REQUIREMENTS: Partial<Record<Intent, FieldRequirements>> = {
     prompts: {
       ...COMMON_PROMPTS,
       "symptoms.prior_treatment":
-        "What procedure did you have done, and roughly when was it?",
+        "¿Qué tratamiento te hicieron y hace cuánto tiempo aproximadamente?",
     },
   },
 
@@ -261,7 +261,7 @@ export function getNextFieldPrompt(
   const field = missing[0];
   return {
     field,
-    prompt: reqs.prompts[field] ?? `Could you provide your ${field.split(".").pop()}?`,
+    prompt: reqs.prompts[field] ?? `¿Me puedes indicar tu ${field.split(".").pop()}?`,
   };
 }
 
