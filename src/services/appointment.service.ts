@@ -2,6 +2,8 @@ import {
   createAppointmentRequest,
   enrichAppointmentRequest,
   getOpenAppointmentRequestForConversation,
+  getOpenAppointmentRequestsForContact,
+  rescheduleAppointmentRequestRPC,
 } from '@/lib/db/appointments';
 import { advanceLeadStatus, getLeadById } from '@/lib/db/leads';
 import { updateConversation } from '@/lib/db/conversations';
@@ -607,4 +609,105 @@ export async function createRequest(input: {
   await updateConversation(input.conversationId, { lead_id: input.leadId });
 
   return request;
+}
+
+// ---------------------------------------------------------------------------
+// Reschedule support
+// ---------------------------------------------------------------------------
+
+/**
+ * Return all open (pending | confirmed) requests for a contact across ALL
+ * conversations. Used by the reschedule flow so the patient can pick which
+ * appointment to change, even if it was created in a different chat session.
+ */
+export async function findOpenRequestsForContact(
+  contactId: string,
+): Promise<AppointmentRequest[]> {
+  return getOpenAppointmentRequestsForContact(contactId);
+}
+
+const APPOINTMENT_TYPE_DISPLAY: Record<string, string> = {
+  new_patient:          'Primera visita',
+  checkup:              'Limpieza / revisión',
+  emergency:            'Urgencia',
+  whitening:            'Blanqueamiento',
+  implant_consult:      'Consulta implantes',
+  orthodontic_consult:  'Consulta ortodoncia',
+  other:                'Otro tratamiento',
+};
+
+const TIME_OF_DAY_DISPLAY: Record<string, string> = {
+  morning:   'por la mañana',
+  afternoon: 'por la tarde',
+  evening:   'por la noche',
+  any:       'horario flexible',
+};
+
+/**
+ * Build a short patient-facing summary of an appointment request, e.g.
+ * "Limpieza / revisión — martes 22 de julio — por la mañana"
+ */
+export function summarizeRequest(req: AppointmentRequest): string {
+  const typeName = APPOINTMENT_TYPE_DISPLAY[req.appointment_type] ?? req.appointment_type;
+  const parts: string[] = [typeName];
+
+  if (req.preferred_date) {
+    const d = new Date(req.preferred_date + 'T00:00:00Z');
+    parts.push(
+      d.toLocaleDateString('es-ES', {
+        weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC',
+      }),
+    );
+  }
+
+  if (req.preferred_time_of_day) {
+    parts.push(TIME_OF_DAY_DISPLAY[req.preferred_time_of_day] ?? req.preferred_time_of_day);
+  }
+
+  return parts.join(' — ');
+}
+
+/**
+ * Execute the atomic reschedule: cancel the old appointment_request and create
+ * the new one in a single Postgres transaction via the Supabase RPC.
+ *
+ * Returns the newly created AppointmentRequest row. Throws typed AppErrors for
+ * the two expected failure modes (not found, already closed) so the caller can
+ * apply a graceful fallback without parsing raw error strings.
+ */
+export async function executeReschedule(input: {
+  oldRequestId: string;
+  contactId: string;
+  conversationId: string;
+  leadId: string;
+  appointment: Partial<AppointmentDetails>;
+}): Promise<AppointmentRequest> {
+  const resolved = resolveFields(input.appointment);
+
+  await rescheduleAppointmentRequestRPC({
+    oldRequestId:      input.oldRequestId,
+    contactId:         input.contactId,
+    conversationId:    input.conversationId,
+    leadId:            input.leadId,
+    appointmentType:   resolved.appointment_type,
+    preferredDate:     resolved.preferred_date,
+    preferredTimeOfDay: resolved.preferred_time_of_day,
+    notes:             resolved.notes,
+  });
+
+  // Fetch the fresh row that the RPC created.
+  const newRow = await getOpenAppointmentRequestForConversation(input.conversationId);
+  if (!newRow) {
+    throw new Error(
+      `Reschedule RPC succeeded but new row not found (conversation=${input.conversationId})`,
+    );
+  }
+
+  console.log('[AppointmentService] appointment_rescheduled', {
+    old_id: input.oldRequestId,
+    new_id: newRow.id,
+    conversationId: input.conversationId,
+  });
+
+  return newRow;
 }

@@ -16,7 +16,14 @@ import {
   transitionStatus,
 } from './conversation.service';
 import { ensureLead } from './lead.service';
-import { createRequest, findOpenAppointmentRequest, isAppointmentDataComplete } from './appointment.service';
+import {
+  createRequest,
+  findOpenAppointmentRequest,
+  findOpenRequestsForContact,
+  isAppointmentDataComplete,
+  executeReschedule,
+  summarizeRequest,
+} from './appointment.service';
 import { createHandoff } from './handoff.service';
 
 import type { Contact, Conversation, Lead, Message } from '@/types/database';
@@ -111,40 +118,89 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     const confirmation = classifyConfirmation(content);
 
     if (confirmation === 'yes') {
-      // Patient confirmed — resolve lead and create the appointment row.
+      // Patient confirmed — resolve lead, then create or reschedule.
       const localLead = await ensureLead(contact.id);
       await updateConversation(conversation_id, { lead_id: localLead.id });
-      await createRequest({
-        contactId: contact.id,
-        conversationId: conversation_id,
-        leadId: localLead.id,
-        appointment: pendingAppointment,
-      });
+
+      const isReschedule = !!state.reschedule_target_id;
+      let confirmReply: string;
+
+      if (isReschedule) {
+        try {
+          await executeReschedule({
+            oldRequestId: state.reschedule_target_id!,
+            contactId: contact.id,
+            conversationId: conversation_id,
+            leadId: localLead.id,
+            appointment: pendingAppointment,
+          });
+          confirmReply =
+            '¡Listo! Tu cita anterior ha sido cancelada y la nueva solicitud ha quedado registrada. ' +
+            'Nuestro equipo se pondrá en contacto contigo para confirmar el nuevo horario. ' +
+            '¿Hay algo más en lo que pueda ayudarte?';
+        } catch (err: unknown) {
+          // Old request was closed between selection and confirmation (e.g. staff acted).
+          // Graceful fallback: create a fresh request so the patient is not left stranded.
+          console.error('[ChatService] reschedule_failed', {
+            conversation_id,
+            old_request_id: state.reschedule_target_id,
+            error: err instanceof Error ? err.message : err,
+          });
+          await createRequest({
+            contactId: contact.id,
+            conversationId: conversation_id,
+            leadId: localLead.id,
+            appointment: pendingAppointment,
+          });
+          confirmReply =
+            'Tu cita anterior ya había sido modificada por nuestro equipo, ' +
+            'así que he registrado tu nueva solicitud directamente. ' +
+            'Nos pondremos en contacto contigo pronto. ¿Hay algo más?';
+        }
+      } else {
+        await createRequest({
+          contactId: contact.id,
+          conversationId: conversation_id,
+          leadId: localLead.id,
+          appointment: pendingAppointment,
+        });
+        confirmReply =
+          '¡Perfecto! Tu solicitud de cita ha quedado registrada. Nuestro equipo se pondrá en contacto contigo para confirmar el horario. ¿Hay algo más en lo que pueda ayudarte?';
+      }
+
+      // Clear ALL confirmation + reschedule state.
       state.awaiting_confirmation = false;
       state.pending_appointment = null;
       state.confirmation_attempts = 0;
       state.appointment_request_open = true;
       state.completed = true;
-      const confirmReply =
-        '¡Perfecto! Tu solicitud de cita ha quedado registrada. Nuestro equipo se pondrá en contacto contigo para confirmar el horario. ¿Hay algo más en lo que pueda ayudarte?';
+      state.reschedule_phase = 'idle';
+      state.reschedule_target_id = null;
+      state.reschedule_target_summary = null;
+
       const aiMessage = await insertMessage({
         conversation_id, role: 'ai', content: confirmReply,
-        metadata: { type: 'appointment_confirmed' },
+        metadata: { type: isReschedule ? 'reschedule_confirmed' : 'appointment_confirmed' },
       });
       const finalConversation = await saveState(conversation_id, state);
       return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
     }
 
     if (confirmation === 'no') {
-      // Patient declined — clear confirmation state so they can restart/change.
+      // Patient declined — clear all confirmation + reschedule state.
+      const wasReschedule = !!state.reschedule_target_id;
       state.awaiting_confirmation = false;
       state.pending_appointment = null;
       state.confirmation_attempts = 0;
-      const declineReply =
-        'Entendido, no hay problema. ¿Te gustaría cambiar algún detalle o hay algo más en lo que pueda ayudarte?';
+      state.reschedule_phase = 'idle';
+      state.reschedule_target_id = null;
+      state.reschedule_target_summary = null;
+      const declineReply = wasReschedule
+        ? 'Entendido, tu cita se queda como estaba. ¿Hay algo más en lo que pueda ayudarte?'
+        : 'Entendido, no hay problema. ¿Te gustaría cambiar algún detalle o hay algo más en lo que pueda ayudarte?';
       const aiMessage = await insertMessage({
         conversation_id, role: 'ai', content: declineReply,
-        metadata: { type: 'appointment_declined' },
+        metadata: { type: wasReschedule ? 'reschedule_declined' : 'appointment_declined' },
       });
       const finalConversation = await saveState(conversation_id, state);
       return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
@@ -183,6 +239,56 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     });
     const finalConversation = await saveState(conversation_id, state);
     return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+  }
+
+  // 6.7. Reschedule target-selection intercept.
+  // When reschedule_phase='selecting_target' the patient is choosing from a
+  // numbered list of their open appointments. Like 6.6, this bypasses the LLM.
+  if (state.reschedule_phase === 'selecting_target') {
+    const meta = state.metadata as Record<string, unknown>;
+    const optionsCount = (meta.reschedule_options_count as number) ?? 0;
+    const selection = classifyTargetSelection(content, optionsCount);
+
+    if (selection === 'abort') {
+      state.reschedule_phase = 'idle';
+      state.reschedule_target_id = null;
+      state.reschedule_target_summary = null;
+      delete meta.reschedule_options;
+      delete meta.reschedule_options_count;
+      const reply = 'Entendido, dejamos las citas como están. ¿Hay algo más en lo que pueda ayudarte?';
+      const aiMsg = await insertMessage({ conversation_id, role: 'ai', content: reply, metadata: { type: 'reschedule_aborted' } });
+      return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
+    }
+
+    if (selection === 'ambiguous') {
+      const reply = 'No lo he entendido. Dime el número de la cita que quieres cambiar, o "cancelar" si prefieres dejarlo.';
+      const aiMsg = await insertMessage({ conversation_id, role: 'ai', content: reply, metadata: { type: 'reschedule_selection_retry' } });
+      return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
+    }
+
+    // Valid numeric selection — lock the target.
+    const options = (meta.reschedule_options as Array<{ id: string; summary: string }>) ?? [];
+    const chosen = options[selection - 1];
+    if (!chosen) {
+      const reply = `Solo tienes ${options.length} cita(s) pendiente(s). Dime el número correcto o "cancelar".`;
+      const aiMsg = await insertMessage({ conversation_id, role: 'ai', content: reply, metadata: { type: 'reschedule_selection_out_of_range' } });
+      return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
+    }
+
+    state.reschedule_target_id = chosen.id;
+    state.reschedule_target_summary = chosen.summary;
+    state.reschedule_phase = 'collecting_new_details';
+    // Reset appointment fields so the LLM collects new preferences from scratch.
+    state.appointment = { service_type: null, preferred_date: null, preferred_time: null, preferred_provider: null, flexibility: null };
+    state.completed = false;
+    state.offer_appointment_pending = false;
+    state.appointment_request_open = false;
+    delete meta.reschedule_options;
+    delete meta.reschedule_options_count;
+
+    const reply = `Perfecto, vamos a cambiar tu cita de **${chosen.summary}**.\n\n¿Para cuándo te gustaría la nueva cita? Dime el servicio, fecha y horario que prefieras.`;
+    const aiMsg = await insertMessage({ conversation_id, role: 'ai', content: reply, metadata: { type: 'reschedule_target_locked', target_id: chosen.id } });
+    return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
   }
 
   // 7. Build system prompt
@@ -260,6 +366,47 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     });
   }
 
+  // ── Reschedule initiation ─────────────────────────────────────────────────
+  // When the LLM fires intent=appointment_reschedule and the sub-flow hasn't
+  // started yet, look up the patient's open requests and branch:
+  //   0 → redirect to new booking
+  //   1 → auto-select; enter collecting_new_details
+  //   2+ → present numbered list; enter selecting_target (handled next turn by 6.7)
+  const isNewRescheduleIntent =
+    turnResult.state.current_intent === 'appointment_reschedule' &&
+    turnResult.state.reschedule_phase === 'idle' &&
+    !turnResult.state.reschedule_target_id;
+
+  if (isNewRescheduleIntent) {
+    const openRequests = await findOpenRequestsForContact(contact.id);
+
+    if (openRequests.length === 0) {
+      turnResult.reply =
+        'No encuentro ninguna cita pendiente asociada a tu cuenta. ¿Te gustaría reservar una cita nueva?';
+      turnResult.state.current_intent = 'appointment_request';
+    } else if (openRequests.length === 1) {
+      const target = openRequests[0];
+      const summary = summarizeRequest(target);
+      turnResult.state.reschedule_target_id = target.id;
+      turnResult.state.reschedule_target_summary = summary;
+      turnResult.state.reschedule_phase = 'collecting_new_details';
+      turnResult.state.appointment = { service_type: null, preferred_date: null, preferred_time: null, preferred_provider: null, flexibility: null };
+      turnResult.state.completed = false;
+      turnResult.state.offer_appointment_pending = false;
+      turnResult.state.appointment_request_open = false;
+      turnResult.reply =
+        `Veo que tienes una cita de **${summary}**. ¿Para cuándo te gustaría cambiarla? Dime la nueva fecha, horario y servicio si quieres modificarlo.`;
+    } else {
+      const options = openRequests.map((req) => ({ id: req.id, summary: summarizeRequest(req) }));
+      turnResult.state.reschedule_phase = 'selecting_target';
+      (turnResult.state.metadata as Record<string, unknown>).reschedule_options = options;
+      (turnResult.state.metadata as Record<string, unknown>).reschedule_options_count = options.length;
+      const listText = options.map((opt, i) => `${i + 1}. ${opt.summary}`).join('\n');
+      turnResult.reply =
+        `Tienes varias citas pendientes:\n\n${listText}\n\n¿Cuál quieres cambiar? Dime el número.`;
+    }
+  }
+
   // 12. Execute side-effects
   let updatedContact = contact;
 
@@ -330,7 +477,29 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     turnResult.rawOutput.correction_fields.length > 0 &&
     hasOpenRequest === true;
 
-  if ((appointmentActionFired || engineCompletedAppointment || deferredAppointment || isCorrectionWithOpenRequest) && isIdentified) {
+  // Reschedule-ready: all new details collected for a reschedule → enter confirmation.
+  // Runs BEFORE the generic appointment block so it takes precedence over the
+  // normal new-booking path. isRescheduleCollecting guards against firing
+  // when the phase was already advanced (e.g. to 'idle' after a redirect).
+  const isRescheduleCollecting =
+    turnResult.state.reschedule_phase === 'collecting_new_details' &&
+    !!turnResult.state.reschedule_target_id;
+
+  const isRescheduleReady =
+    isRescheduleCollecting && isSchedulingIntent && appointmentDataReady && isIdentified;
+
+  if (isRescheduleReady && (appointmentActionFired || engineCompletedAppointment || deferredAppointment)) {
+    turnResult.state.awaiting_confirmation = true;
+    turnResult.state.pending_appointment = { ...turnResult.state.appointment };
+    turnResult.state.confirmation_attempts = 0;
+    turnResult.state.completed = false;
+    turnResult.state.offer_appointment_pending = false;
+    turnResult.reply = buildRescheduleConfirmationSummary(
+      turnResult.state.reschedule_target_summary!,
+      turnResult.state.patient,
+      turnResult.state.appointment,
+    );
+  } else if ((appointmentActionFired || engineCompletedAppointment || deferredAppointment || isCorrectionWithOpenRequest) && isIdentified) {
     if (hasOpenRequest) {
       // Existing request — enrich or apply correction directly.
       // Confirmation already happened on the turn that created the row.
@@ -452,5 +621,69 @@ function buildConfirmationSummary(
   if (appointment.preferred_time)  lines.push(`• Horario: ${appointment.preferred_time}`);
   if (appointment.preferred_provider) lines.push(`• Dentista: ${appointment.preferred_provider}`);
   lines.push('\n¿Confirmas que quieres registrar esta solicitud? Responde **sí** para confirmar o **no** si quieres cambiar algo.');
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Reschedule helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Classify the patient's reply when they are selecting which appointment to
+ * reschedule from a numbered list.
+ *
+ * Returns:
+ *   number  — 1-indexed selection (always within 1..maxOptions)
+ *   'abort' — patient wants to cancel the reschedule flow
+ *   'ambiguous' — could not determine intent
+ */
+function classifyTargetSelection(
+  text: string,
+  maxOptions: number,
+): number | 'abort' | 'ambiguous' {
+  const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+
+  const ABORT = /\b(cancelar|cancel|dejalo|dejarlo|nada|ninguna|no quiero|olvidalo|mejor no|dejar)\b/;
+  if (ABORT.test(t)) return 'abort';
+
+  // Explicit digit(s)
+  const numMatch = t.match(/\b(\d+)\b/);
+  if (numMatch) {
+    const n = parseInt(numMatch[1], 10);
+    return n >= 1 && n <= maxOptions ? n : 'ambiguous';
+  }
+
+  // Spanish ordinals / number words (supports up to 4 options which covers 99% of cases)
+  const ORDINAL_MAP: Record<string, number> = {
+    primera: 1, primero: 1, uno: 1, una: 1,
+    segunda: 2, segundo: 2, dos: 2,
+    tercera: 3, tercero: 3, tres: 3,
+    cuarta: 4, cuarto: 4, cuatro: 4,
+  };
+  for (const [word, num] of Object.entries(ORDINAL_MAP)) {
+    if (t.includes(word) && num <= maxOptions) return num;
+  }
+
+  return 'ambiguous';
+}
+
+/**
+ * Build a confirmation summary that shows old → new appointment details before
+ * executing the atomic reschedule RPC.
+ */
+function buildRescheduleConfirmationSummary(
+  oldSummary: string,
+  patient: import('@/lib/conversation/schema').ConversationState['patient'],
+  newAppointment: import('@/lib/conversation/schema').ConversationState['appointment'],
+): string {
+  const lines: string[] = ['Antes de hacer el cambio, confirma los datos:'];
+  lines.push(`\n**Cita actual:** ${oldSummary}`);
+  lines.push('\n**Nueva cita:**');
+  if (patient.full_name)                   lines.push(`• Nombre: ${patient.full_name}`);
+  if (newAppointment.service_type)         lines.push(`• Servicio: ${newAppointment.service_type}`);
+  if (newAppointment.preferred_date)       lines.push(`• Fecha: ${newAppointment.preferred_date}`);
+  if (newAppointment.preferred_time)       lines.push(`• Horario: ${newAppointment.preferred_time}`);
+  if (newAppointment.preferred_provider)   lines.push(`• Dentista: ${newAppointment.preferred_provider}`);
+  lines.push('\n¿Confirmas el cambio? Responde **sí** para confirmar o **no** si prefieres dejarlo como está.');
   return lines.join('\n');
 }

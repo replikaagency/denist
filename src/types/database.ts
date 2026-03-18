@@ -125,6 +125,11 @@ export interface AppointmentRequest {
   notes: string | null;
   confirmed_at: string | null;
   confirmed_datetime: string | null;
+  // Reschedule audit trail (added migration 0006)
+  rescheduled_from: string | null;
+  rescheduled_to: string | null;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -300,6 +305,10 @@ export type Database = {
           notes?: string | null;
           confirmed_at?: string | null;
           confirmed_datetime?: string | null;
+          rescheduled_from?: string | null;
+          rescheduled_to?: string | null;
+          cancelled_at?: string | null;
+          cancel_reason?: string | null;
           metadata?: Record<string, unknown>;
           created_at?: string;
           updated_at?: string;
@@ -317,6 +326,10 @@ export type Database = {
           notes?: string | null;
           confirmed_at?: string | null;
           confirmed_datetime?: string | null;
+          rescheduled_from?: string | null;
+          rescheduled_to?: string | null;
+          cancelled_at?: string | null;
+          cancel_reason?: string | null;
           metadata?: Record<string, unknown>;
           created_at?: string;
           updated_at?: string;

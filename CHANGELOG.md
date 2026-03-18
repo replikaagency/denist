@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.0] — 2026-03-18
+
+### Added
+
+- **Robust rescheduling flow** (`supabase/migrations/0006_reschedule_support.sql`, `src/lib/db/appointments.ts`, `src/services/appointment.service.ts`, `src/services/chat.service.ts`): Atomic cancel-old + create-new via a Postgres RPC so the dedup index is never violated. Sub-flow: intent=`appointment_reschedule` triggers `findOpenRequestsForContact` → 0 results redirects to new booking, 1 auto-selects, 2+ shows numbered list (`selecting_target` phase, LLM bypassed, handled in step 6.7). Once target is locked (`collecting_new_details`), normal LLM turns fill new date/time/service. When data is complete `isRescheduleReady` enters the confirmation flow (Feature 1) showing old→new summary. On `yes`, `executeReschedule()` calls the RPC; if the old request was already closed by staff it falls back gracefully to `createRequest()`. On `no`, old appointment is untouched. `ConversationState` gains `reschedule_target_id`, `reschedule_target_summary`, `reschedule_phase` — all `.default()`-safe. DB types updated with `rescheduled_from`, `rescheduled_to`, `cancelled_at`, `cancel_reason`.
+
 ## [1.0.0] — 2026-03-18
 
 ### Added

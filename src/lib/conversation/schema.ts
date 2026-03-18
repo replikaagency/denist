@@ -206,6 +206,20 @@ export const ConversationStateSchema = z.object({
   // Synced from DB in chat.service before processTurn so validateFlowAction
   // can block redundant offer_appointment actions without a DB call.
   appointment_request_open: z.boolean().default(false),
+  // ── Reschedule flow ──────────────────────────────────────────────────────
+  // Tracks which existing appointment_request the patient wants to change.
+  // Cleared after reschedule completes or the patient abandons the flow.
+  //
+  // reschedule_phase:
+  //   'idle'                — not rescheduling
+  //   'selecting_target'    — 2+ open requests; waiting for patient to pick one
+  //   'collecting_new_details' — target locked; LLM gathering new date/time/service
+  //
+  // All three use .default() so existing DB records parse without a migration.
+  reschedule_target_id: z.string().nullable().default(null),
+  reschedule_target_summary: z.string().nullable().default(null),
+  reschedule_phase: z.enum(['idle', 'selecting_target', 'collecting_new_details']).default('idle'),
+
   // Explicit confirmation flow — patient must say "sí" before any appointment
   // row is created. Set to true when all required fields are filled but the
   // DB row has not yet been written. Cleared once the patient confirms (row
@@ -279,6 +293,9 @@ export function createInitialState(conversationId: string): ConversationState {
     completed: false,
     offer_appointment_pending: false,
     appointment_request_open: false,
+    reschedule_target_id: null,
+    reschedule_target_summary: null,
+    reschedule_phase: 'idle',
     awaiting_confirmation: false,
     pending_appointment: null,
     confirmation_attempts: 0,
