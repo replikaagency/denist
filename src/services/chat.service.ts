@@ -114,8 +114,19 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   // and execute the corresponding branch.  The LLM is intentionally bypassed
   // so a "sí" cannot be misclassified or rewritten by any fallback rule.
   if (state.awaiting_confirmation && state.pending_appointment) {
-    const pendingAppointment = state.pending_appointment; // non-null inside this block
-    const confirmation = classifyConfirmation(content);
+    // Confirmation expiry intercept
+    const lastMsgTime = conversation.last_message_at ? new Date(conversation.last_message_at).getTime() : 0;
+    if (lastMsgTime > 0 && Date.now() - lastMsgTime > 30 * 60 * 1000) {
+      // Epired. Reset state and let it fall through to the LLM to process the patient's new message normally.
+      state.awaiting_confirmation = false;
+      state.pending_appointment = null;
+      state.confirmation_attempts = 0;
+      state.reschedule_phase = 'idle';
+      state.reschedule_target_id = null;
+      state.reschedule_target_summary = null;
+    } else {
+      const pendingAppointment = state.pending_appointment; // non-null inside this block
+      const confirmation = classifyConfirmation(content);
 
     if (confirmation === 'yes') {
       // Patient confirmed — resolve lead, then create or reschedule.
@@ -239,6 +250,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     });
     const finalConversation = await saveState(conversation_id, state);
     return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+    }
   }
 
   // 6.7. Reschedule target-selection intercept.
@@ -600,9 +612,9 @@ function buildLLMMessages(history: Message[]): ChatMessage[] {
 function classifyConfirmation(text: string): 'yes' | 'no' | 'ambiguous' {
   const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
   const YES = /\b(si|yes|confirmo|confirmar|correcto|exacto|adelante|perfecto|de acuerdo|ok|claro|por supuesto|genial|eso es|afirmo|afirmativo|dale|bueno|vamos|va)\b/;
-  const NO  = /\b(no|cancelar|cancel|mejor no|prefiero no|cambiar|cambio|espera|para|detener|nope|negativo|olvida|olvidalo|olvídalo)\b/;
+  const NO = /\b(no|cancelar|cancel|mejor no|prefiero no|cambiar|cambio|espera|para|detener|nope|negativo|olvida|olvidalo|olvídalo)\b/;
   if (YES.test(t)) return 'yes';
-  if (NO.test(t))  return 'no';
+  if (NO.test(t)) return 'no';
   return 'ambiguous';
 }
 
@@ -615,10 +627,10 @@ function buildConfirmationSummary(
   appointment: import('@/lib/conversation/schema').ConversationState['appointment'],
 ): string {
   const lines: string[] = ['Antes de registrar tu solicitud, déjame confirmarte los datos:'];
-  if (patient.full_name)           lines.push(`• Nombre: ${patient.full_name}`);
-  if (appointment.service_type)    lines.push(`• Servicio: ${appointment.service_type}`);
-  if (appointment.preferred_date)  lines.push(`• Fecha preferida: ${appointment.preferred_date}`);
-  if (appointment.preferred_time)  lines.push(`• Horario: ${appointment.preferred_time}`);
+  if (patient.full_name) lines.push(`• Nombre: ${patient.full_name}`);
+  if (appointment.service_type) lines.push(`• Servicio: ${appointment.service_type}`);
+  if (appointment.preferred_date) lines.push(`• Fecha preferida: ${appointment.preferred_date}`);
+  if (appointment.preferred_time) lines.push(`• Horario: ${appointment.preferred_time}`);
   if (appointment.preferred_provider) lines.push(`• Dentista: ${appointment.preferred_provider}`);
   lines.push('\n¿Confirmas que quieres registrar esta solicitud? Responde **sí** para confirmar o **no** si quieres cambiar algo.');
   return lines.join('\n');
@@ -679,11 +691,11 @@ function buildRescheduleConfirmationSummary(
   const lines: string[] = ['Antes de hacer el cambio, confirma los datos:'];
   lines.push(`\n**Cita actual:** ${oldSummary}`);
   lines.push('\n**Nueva cita:**');
-  if (patient.full_name)                   lines.push(`• Nombre: ${patient.full_name}`);
-  if (newAppointment.service_type)         lines.push(`• Servicio: ${newAppointment.service_type}`);
-  if (newAppointment.preferred_date)       lines.push(`• Fecha: ${newAppointment.preferred_date}`);
-  if (newAppointment.preferred_time)       lines.push(`• Horario: ${newAppointment.preferred_time}`);
-  if (newAppointment.preferred_provider)   lines.push(`• Dentista: ${newAppointment.preferred_provider}`);
+  if (patient.full_name) lines.push(`• Nombre: ${patient.full_name}`);
+  if (newAppointment.service_type) lines.push(`• Servicio: ${newAppointment.service_type}`);
+  if (newAppointment.preferred_date) lines.push(`• Fecha: ${newAppointment.preferred_date}`);
+  if (newAppointment.preferred_time) lines.push(`• Horario: ${newAppointment.preferred_time}`);
+  if (newAppointment.preferred_provider) lines.push(`• Dentista: ${newAppointment.preferred_provider}`);
   lines.push('\n¿Confirmas el cambio? Responde **sí** para confirmar o **no** si prefieres dejarlo como está.');
   return lines.join('\n');
 }

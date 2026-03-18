@@ -17,6 +17,7 @@ interface ConversationRow {
   created_at: string;
   last_message_preview: string | null;
   last_message_role: string | null;
+  awaiting_confirmation?: boolean;
   contact: {
     id: string;
     first_name: string | null;
@@ -164,10 +165,10 @@ export function ConversationsList({
                         && conv.status !== 'abandoned'
                         && conv.status !== 'waiting_human'
                         && conv.status !== 'human_active' && (
-                        <Badge variant="outline" className="text-[10px] bg-orange-50 text-orange-700 border-orange-200">
-                          AI Paused
-                        </Badge>
-                      )}
+                          <Badge variant="outline" className="text-[10px] bg-orange-50 text-orange-700 border-orange-200">
+                            AI Paused
+                          </Badge>
+                        )}
                     </div>
                     {conv.last_message_preview ? (
                       <div className="mt-0.5 truncate text-xs text-muted-foreground">
