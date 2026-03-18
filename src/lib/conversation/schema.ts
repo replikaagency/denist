@@ -206,6 +206,14 @@ export const ConversationStateSchema = z.object({
   // Synced from DB in chat.service before processTurn so validateFlowAction
   // can block redundant offer_appointment actions without a DB call.
   appointment_request_open: z.boolean().default(false),
+  // Explicit confirmation flow — patient must say "sí" before any appointment
+  // row is created. Set to true when all required fields are filled but the
+  // DB row has not yet been written. Cleared once the patient confirms (row
+  // created) or declines (state reset). Uses .default(false) / .default(null)
+  // / .default(0) so existing DB records parse without a migration.
+  awaiting_confirmation: z.boolean().default(false),
+  pending_appointment: AppointmentSchema.nullable().default(null),
+  confirmation_attempts: z.number().default(0),
   // Audit and operational metadata. Uses .loose() so unknown keys present in
   // existing DB records are preserved on parse/re-save without a migration.
   // correction_log is expected to remain small (single-digit entries per
@@ -271,6 +279,9 @@ export function createInitialState(conversationId: string): ConversationState {
     completed: false,
     offer_appointment_pending: false,
     appointment_request_open: false,
+    awaiting_confirmation: false,
+    pending_appointment: null,
+    confirmation_attempts: 0,
     metadata: { correction_log: [], correction_count: 0, last_correction_at: null, too_many_corrections: false },
   };
 }

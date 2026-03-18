@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.0] — 2026-03-18
+
+### Added
+
+- **Explicit appointment confirmation flow** (`lib/conversation/schema.ts`, `services/chat.service.ts`): No appointment row is written to the DB until the patient explicitly confirms with "sí". When all required fields are collected the system now: (1) stores the appointment snapshot in `ConversationState.pending_appointment`, (2) sets `awaiting_confirmation=true`, (3) overrides the LLM reply with a structured confirmation summary. On the next turn the LLM is bypassed and `classifyConfirmation()` decides the branch: confirmed → `createRequest()` + clear state; declined → clear state + invite changes; ambiguous (×2) → escalate to human. `ConversationState` gains three new fields: `awaiting_confirmation`, `pending_appointment`, `confirmation_attempts` — all with `.default()` so existing DB records parse without a migration.
+
 ## [0.9.1] — 2026-03-18
 
 ### Fixed

@@ -101,6 +101,90 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     state.completed = false;
   }
 
+  // 6.6. Explicit confirmation intercept.
+  // When the previous turn set awaiting_confirmation=true we do NOT run a full
+  // LLM turn — we only classify the patient's reply as yes / no / ambiguous
+  // and execute the corresponding branch.  The LLM is intentionally bypassed
+  // so a "sí" cannot be misclassified or rewritten by any fallback rule.
+  if (state.awaiting_confirmation && state.pending_appointment) {
+    const pendingAppointment = state.pending_appointment; // non-null inside this block
+    const confirmation = classifyConfirmation(content);
+
+    if (confirmation === 'yes') {
+      // Patient confirmed — resolve lead and create the appointment row.
+      const localLead = await ensureLead(contact.id);
+      await updateConversation(conversation_id, { lead_id: localLead.id });
+      await createRequest({
+        contactId: contact.id,
+        conversationId: conversation_id,
+        leadId: localLead.id,
+        appointment: pendingAppointment,
+      });
+      state.awaiting_confirmation = false;
+      state.pending_appointment = null;
+      state.confirmation_attempts = 0;
+      state.appointment_request_open = true;
+      state.completed = true;
+      const confirmReply =
+        '¡Perfecto! Tu solicitud de cita ha quedado registrada. Nuestro equipo se pondrá en contacto contigo para confirmar el horario. ¿Hay algo más en lo que pueda ayudarte?';
+      const aiMessage = await insertMessage({
+        conversation_id, role: 'ai', content: confirmReply,
+        metadata: { type: 'appointment_confirmed' },
+      });
+      const finalConversation = await saveState(conversation_id, state);
+      return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+    }
+
+    if (confirmation === 'no') {
+      // Patient declined — clear confirmation state so they can restart/change.
+      state.awaiting_confirmation = false;
+      state.pending_appointment = null;
+      state.confirmation_attempts = 0;
+      const declineReply =
+        'Entendido, no hay problema. ¿Te gustaría cambiar algún detalle o hay algo más en lo que pueda ayudarte?';
+      const aiMessage = await insertMessage({
+        conversation_id, role: 'ai', content: declineReply,
+        metadata: { type: 'appointment_declined' },
+      });
+      const finalConversation = await saveState(conversation_id, state);
+      return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+    }
+
+    // ambiguous — re-ask, and escalate after two failed attempts.
+    const attempts = (state.confirmation_attempts ?? 0) + 1;
+    state.confirmation_attempts = attempts;
+
+    if (attempts >= 2) {
+      state.awaiting_confirmation = false;
+      state.escalated = true;
+      state.escalation_reason = 'Patient could not confirm appointment after 2 attempts.';
+      await createHandoff({
+        conversationId: conversation_id,
+        contactId: contact.id,
+        escalation: { shouldEscalate: true, reason: state.escalation_reason, type: 'human' },
+        triggerMessageId: patientMessage.id,
+      });
+      const escalateReply =
+        'No me ha quedado claro si quieres confirmar la cita. Voy a conectarte con un miembro de nuestro equipo para que puedan ayudarte directamente.';
+      const aiMessage = await insertMessage({
+        conversation_id, role: 'ai', content: escalateReply,
+        metadata: { type: 'confirmation_escalated' },
+      });
+      const finalConversation = await saveState(conversation_id, state);
+      return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+    }
+
+    // Ask again.
+    const clarifyReply =
+      'Perdona, no lo he entendido bien. ¿Confirmas la solicitud de cita? Responde **sí** para confirmar o **no** si prefieres cambiar algo.';
+    const aiMessage = await insertMessage({
+      conversation_id, role: 'ai', content: clarifyReply,
+      metadata: { type: 'awaiting_confirmation', attempts },
+    });
+    const finalConversation = await saveState(conversation_id, state);
+    return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+  }
+
   // 7. Build system prompt
   const systemPrompt = buildSystemPrompt(getClinicConfig(), state);
 
@@ -247,7 +331,9 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     hasOpenRequest === true;
 
   if ((appointmentActionFired || engineCompletedAppointment || deferredAppointment || isCorrectionWithOpenRequest) && isIdentified) {
-    if (hasOpenRequest || appointmentDataReady) {
+    if (hasOpenRequest) {
+      // Existing request — enrich or apply correction directly.
+      // Confirmation already happened on the turn that created the row.
       // lead is guaranteed non-null: isIdentified gate above ensures it was set.
       await createRequest({
         contactId: contact.id,
@@ -260,8 +346,19 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       });
       turnResult.state.offer_appointment_pending = false;
       turnResult.state.appointment_request_open = true;
+    } else if (appointmentDataReady) {
+      // First booking: enter the explicit confirmation flow.
+      // No DB row is created yet — we store the snapshot in state and ask the
+      // patient to confirm before writing anything.
+      turnResult.state.awaiting_confirmation = true;
+      turnResult.state.pending_appointment = { ...turnResult.state.appointment };
+      turnResult.state.confirmation_attempts = 0;
+      turnResult.state.completed = false;        // don't lock flow until confirmed
+      turnResult.state.offer_appointment_pending = false;
+      // Override the LLM reply with a structured confirmation summary.
+      turnResult.reply = buildConfirmationSummary(turnResult.state.patient, turnResult.state.appointment);
     } else {
-      // No existing request AND data is still incomplete — keep deferring.
+      // Appointment data still incomplete — keep deferring.
       turnResult.state.offer_appointment_pending = true;
     }
   } else if (turnResult.rawOutput.next_action === 'offer_appointment' && !isIdentified) {
@@ -321,4 +418,39 @@ function buildLLMMessages(history: Message[]): ChatMessage[] {
     role: msg.role === 'patient' ? 'user' as const : 'assistant' as const,
     content: msg.content,
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Explicit appointment confirmation helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Classify the patient's reply as a yes, no, or ambiguous confirmation.
+ * Accent-normalized so "sí" → "si" matches without diacritic handling in regex.
+ */
+function classifyConfirmation(text: string): 'yes' | 'no' | 'ambiguous' {
+  const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  const YES = /\b(si|yes|confirmo|confirmar|correcto|exacto|adelante|perfecto|de acuerdo|ok|claro|por supuesto|genial|eso es|afirmo|afirmativo|dale|bueno|vamos|va)\b/;
+  const NO  = /\b(no|cancelar|cancel|mejor no|prefiero no|cambiar|cambio|espera|para|detener|nope|negativo|olvida|olvidalo|olvídalo)\b/;
+  if (YES.test(t)) return 'yes';
+  if (NO.test(t))  return 'no';
+  return 'ambiguous';
+}
+
+/**
+ * Build a human-readable confirmation summary to send to the patient before
+ * writing any appointment row to the DB.
+ */
+function buildConfirmationSummary(
+  patient: import('@/lib/conversation/schema').ConversationState['patient'],
+  appointment: import('@/lib/conversation/schema').ConversationState['appointment'],
+): string {
+  const lines: string[] = ['Antes de registrar tu solicitud, déjame confirmarte los datos:'];
+  if (patient.full_name)           lines.push(`• Nombre: ${patient.full_name}`);
+  if (appointment.service_type)    lines.push(`• Servicio: ${appointment.service_type}`);
+  if (appointment.preferred_date)  lines.push(`• Fecha preferida: ${appointment.preferred_date}`);
+  if (appointment.preferred_time)  lines.push(`• Horario: ${appointment.preferred_time}`);
+  if (appointment.preferred_provider) lines.push(`• Dentista: ${appointment.preferred_provider}`);
+  lines.push('\n¿Confirmas que quieres registrar esta solicitud? Responde **sí** para confirmar o **no** si quieres cambiar algo.');
+  return lines.join('\n');
 }
