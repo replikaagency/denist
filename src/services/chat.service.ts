@@ -653,9 +653,17 @@ function buildLLMMessages(history: Message[]): ChatMessage[] {
  */
 function classifyConfirmation(text: string): 'yes' | 'no' | 'ambiguous' {
   const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  // Intercept uncertainty phrases before YES/NO — prevents "no sé si..." from matching
+  // the conditional conjunction "si" as an affirmative, which would create the appointment.
+  const UNCERTAINTY = /\b(no se|no lo se|no estoy seguro|no sabria|no tengo claro)\b/;
+  if (UNCERTAINTY.test(t)) return 'ambiguous';
   const YES = /\b(si|yes|confirmo|confirmar|correcto|exacto|adelante|perfecto|de acuerdo|ok|claro|por supuesto|genial|eso es|afirmo|afirmativo|dale|bueno|vamos)\b/;
   const NO = /\b(no|cancelar|cancel|mejor no|prefiero no|cambiar|espera|detener|nope|negativo|olvida|olvidalo|olvídalo)\b/;
-  if (YES.test(t)) return 'yes';
+  const CORRECTION = /\b(pero|aunque|en vez de|mejor|cambia|cambiar|no la fecha|no la hora|sino)\b/;
+  if (YES.test(t)) {
+    if (CORRECTION.test(t)) return 'ambiguous';
+    return 'yes';
+  }
   if (NO.test(t)) return 'no';
   return 'ambiguous';
 }
