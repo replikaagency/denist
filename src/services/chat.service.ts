@@ -223,6 +223,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
 
     if (attempts >= 2) {
       state.awaiting_confirmation = false;
+      state.pending_appointment = null;
       state.escalated = true;
       state.escalation_reason = 'Patient could not confirm appointment after 2 attempts.';
       await createHandoff({
@@ -611,8 +612,8 @@ function buildLLMMessages(history: Message[]): ChatMessage[] {
  */
 function classifyConfirmation(text: string): 'yes' | 'no' | 'ambiguous' {
   const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-  const YES = /\b(si|yes|confirmo|confirmar|correcto|exacto|adelante|perfecto|de acuerdo|ok|claro|por supuesto|genial|eso es|afirmo|afirmativo|dale|bueno|vamos|va)\b/;
-  const NO = /\b(no|cancelar|cancel|mejor no|prefiero no|cambiar|cambio|espera|para|detener|nope|negativo|olvida|olvidalo|olvídalo)\b/;
+  const YES = /\b(si|yes|confirmo|confirmar|correcto|exacto|adelante|perfecto|de acuerdo|ok|claro|por supuesto|genial|eso es|afirmo|afirmativo|dale|bueno|vamos)\b/;
+  const NO = /\b(no|cancelar|cancel|mejor no|prefiero no|cambiar|espera|detener|nope|negativo|olvida|olvidalo|olvídalo)\b/;
   if (YES.test(t)) return 'yes';
   if (NO.test(t)) return 'no';
   return 'ambiguous';
