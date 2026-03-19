@@ -317,6 +317,25 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
   }
 
+  // 6.8. Post-completion "no" intercept.
+  // When a booking is already registered (completed=true, appointment_request_open=true)
+  // and awaiting_confirmation is false (confirmation step is done), a clear "no" from
+  // the patient means dissatisfaction with the just-registered request — NOT a desire
+  // to end the conversation. Without this intercept the terminal-stage LLM fires
+  // end_conversation and closes the conversation while the patient is unsatisfied.
+  if (state.completed && state.appointment_request_open && !state.awaiting_confirmation) {
+    if (classifyConfirmation(content) === 'no') {
+      const correctionInvite =
+        'Entendido. ¿Qué te gustaría cambiar? Puedes decirme la fecha, la hora o el servicio y lo actualizo.';
+      const aiMessage = await insertMessage({
+        conversation_id, role: 'ai', content: correctionInvite,
+        metadata: { type: 'post_booking_correction_invited', path: 'post_completion_intercept' },
+      });
+      const finalConversation = await saveState(conversation_id, state);
+      return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+    }
+  }
+
   // 7. Build system prompt
   const systemPrompt = buildSystemPrompt(getClinicConfig(), state);
 
@@ -430,9 +449,19 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     const openRequests = await findOpenRequestsForContact(contact.id);
 
     if (openRequests.length === 0) {
-      turnResult.reply =
-        'No encuentro ninguna cita pendiente asociada a tu cuenta. ¿Te gustaría enviar una nueva solicitud de cita?';
-      turnResult.state.current_intent = 'appointment_request';
+      if (preExistingRequest) {
+        // This conversation has an open request that the contact-scoped query
+        // didn't find (e.g. contact_id mismatch on anonymous sessions). The
+        // patient is expressing doubt about the just-registered booking — respond
+        // coherently instead of saying no requests exist.
+        turnResult.reply =
+          'Tu solicitud ya ha quedado registrada. Si quieres cambiar la fecha, ' +
+          'la hora o el servicio, dímelo y preparo una nueva solicitud con la preferencia correcta.';
+      } else {
+        turnResult.reply =
+          'No encuentro ninguna cita pendiente asociada a tu cuenta. ¿Te gustaría enviar una nueva solicitud de cita?';
+        turnResult.state.current_intent = 'appointment_request';
+      }
     } else if (openRequests.length === 1) {
       const target = openRequests[0];
       const summary = summarizeRequest(target);
@@ -564,10 +593,17 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       });
       turnResult.state.offer_appointment_pending = false;
       turnResult.state.appointment_request_open = true;
-    } else if (appointmentDataReady) {
+    } else if (appointmentDataReady || appointmentActionFired) {
       // First booking: enter the explicit confirmation flow.
       // No DB row is created yet — we store the snapshot in state and ask the
       // patient to confirm before writing anything.
+      // appointmentActionFired is included as a trigger because when the LLM
+      // fires offer_appointment and the flow controller did NOT override it
+      // (implying stage='ready', all required fields present), we must show
+      // confirmation even if date/time normalization fails (e.g. "martes" is
+      // semantically complete but not ISO-parseable). Without this, the LLM's
+      // "He anotado tu solicitud" reply would pass through with no DB write and
+      // no confirmation prompt shown to the patient.
       turnResult.state.awaiting_confirmation = true;
       turnResult.state.pending_appointment = { ...turnResult.state.appointment };
       turnResult.state.confirmation_attempts = 0;
@@ -581,6 +617,39 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     }
   } else if (turnResult.rawOutput.next_action === 'offer_appointment' && !isIdentified) {
     turnResult.state.offer_appointment_pending = true;
+  }
+
+  // Pre-finalization lead flush.
+  // If the conversation is about to be escalated or resolved and still has no lead,
+  // use accumulated state.patient as a deterministic fallback so the conversation
+  // is not saved as "Anonymous" in the staff dashboard.
+  // This fires when isIdentified=false on this turn (e.g. patient gave name on a
+  // prior turn but not phone, or enrichContact returned null due to a duplicate),
+  // yet state.patient has name + phone collected across all turns.
+  const isFinalizingConversation =
+    turnResult.escalation.shouldEscalate ||
+    (!turnResult.escalation.shouldEscalate && turnResult.rawOutput.next_action === 'end_conversation');
+  if (isFinalizingConversation && lead === null) {
+    const stateIdentified = !!(state.patient.full_name && (state.patient.phone || state.patient.email));
+    if (stateIdentified) {
+      // Re-attempt enrichment from accumulated state if the contact record is still
+      // anonymous (either enrichment hasn't run yet or returned null this turn).
+      if (!updatedContact.first_name || (!updatedContact.phone && !updatedContact.email)) {
+        const flushEnriched = await enrichContact(contact.id, {
+          full_name: state.patient.full_name,
+          phone: state.patient.phone,
+          email: state.patient.email,
+        });
+        if (flushEnriched) updatedContact = flushEnriched;
+      }
+      const flushLead = await ensureLead(contact.id);
+      await updateConversation(conversation_id, { lead_id: flushLead.id });
+      console.log('[ChatService] pre_finalization_lead_flush', {
+        conversation_id,
+        lead_id: flushLead.id,
+        contact_id: contact.id,
+      });
+    }
   }
 
   if (turnResult.escalation.shouldEscalate) {

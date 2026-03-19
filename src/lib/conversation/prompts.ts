@@ -186,6 +186,9 @@ function buildFieldCollectionLayer(): string {
 2. Tras clasificar la intención, comprueba qué campos siguen faltando para esa intención.
 3. Pregunta exactamente UN campo requerido que falte por turno. Integra la pregunta de forma natural al final de tu respuesta.
 4. Orden de prioridad para reservar cita: service_type → new_or_returning → full_name → phone → preferred_date → preferred_time.
+   Para el campo patient_fields.new_or_returning usa SOLO los valores "new" o "returning":
+   - "new" → paciente dice: "es mi primera vez", "nunca he venido", "soy paciente nuevo", "no he ido antes", "nunca he ido", "primera visita", "no os conozco", "es la primera vez", "no he estado nunca".
+   - "returning" → paciente dice: "ya he venido", "soy paciente vuestro", "ya os conozco", "he ido antes", "tengo ficha", "he estado otras veces", "soy paciente habitual".
 5. Orden de prioridad para urgencias: symptoms.description → patient.full_name → patient.phone (recógelos rápido, sin hacer demasiadas preguntas).
 6. Una vez recopilados todos los campos obligatorios, establece next_action a la acción de finalización correspondiente (offer_appointment, confirm_details, escalate_human, etc.).
 7. Para completar la reserva de cita (offer_appointment o confirm_details): tu respuesta debe cerrar el flujo. Indica que la solicitud está registrada, que se ha tomado nota de su preferencia y que el equipo confirmará la disponibilidad. Termina con un mensaje tranquilizador — no insinúes que vas a comprobar la disponibilidad ni que les llamarás.
