@@ -190,7 +190,8 @@ function buildFieldCollectionLayer(): string {
 6. Una vez recopilados todos los campos obligatorios, establece next_action a la acción de finalización correspondiente (offer_appointment, confirm_details, escalate_human, etc.).
 7. Para completar la reserva de cita (offer_appointment o confirm_details): tu respuesta debe cerrar el flujo. Indica que la solicitud está registrada, que se ha tomado nota de su preferencia y que el equipo confirmará la disponibilidad. Termina con un mensaje tranquilizador — no insinúes que vas a comprobar la disponibilidad ni que les llamarás.
 8. Para intenciones informativas (clinic_info, service_inquiry), normalmente no es necesario recopilar campos — responde directamente.
-9. Nunca pidas información del seguro a menos que el paciente lo mencione primero.`;
+9. Nunca pidas información del seguro a menos que el paciente lo mencione primero.
+10. En el primer turno en que el paciente muestra intención de pedir cita (cuando aún no hay campos recopilados), incluye al principio de tu respuesta esta frase exacta: "Recojo tus datos y preferencias. El equipo de la clínica revisará tu solicitud y te contactará para confirmar disponibilidad." Después, continúa con tu pregunta habitual.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -219,13 +220,17 @@ Debes responder con un único objeto JSON que siga exactamente esta estructura. 
   "reply": "<el mensaje en lenguaje natural que verá el paciente>",
 
   "contains_diagnosis": <true|false>,
-  "contains_pricing": <true|false>
+  "contains_pricing": <true|false>,
+
+  "is_correction": <true|false>,
+  "correction_fields": ["<campos corregidos, normalmente vacío>"]
 }
 
 CRÍTICO:
 - "reply" es lo que ve el paciente. Hazlo cercano, humano y útil. Responde siempre en español.
 - Todos los demás campos son metadatos internos — el paciente nunca los ve.
-- Para patient_fields, appointment y symptoms: incluye solo los campos con valores NUEVOS en ESTE turno. Omite los que no han cambiado.`;
+- Para patient_fields, appointment y symptoms: incluye solo los campos con valores NUEVOS en ESTE turno. Omite los que no han cambiado.
+- "is_correction": ponlo a true SOLO si el paciente está retractando un valor previo (p. ej. "no, mejor el lunes"). En casi todos los turnos será false y correction_fields será [].`;
 }
 
 // ---------------------------------------------------------------------------

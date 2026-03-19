@@ -1,5 +1,7 @@
 import { createHandoffEvent, getOpenHandoffForConversation } from '@/lib/db/handoffs';
 import { updateConversation } from '@/lib/db/conversations';
+import { getContactById } from '@/lib/db/contacts';
+import { sendEscalationEmail } from '@/lib/notifications/escalation-email';
 import type { HandoffEvent, HandoffReason } from '@/types/database';
 import type { EscalationDecision } from '@/lib/conversation/engine';
 
@@ -51,6 +53,23 @@ export async function createHandoff(input: {
     status: 'waiting_human',
     ai_enabled: false,
   });
+
+  // Non-critical: email failure must never block the handoff.
+  try {
+    const contact = await getContactById(handoff.contact_id);
+    await sendEscalationEmail({
+      conversationId: input.conversationId,
+      patientName: contact.first_name ?? null,
+      patientPhone: contact.phone ?? null,
+      reason: input.escalation.reason ?? null,
+      escalationType: input.escalation.type ?? null,
+    });
+  } catch (err) {
+    console.error('[Notifications] escalation_email_failed', {
+      conversationId: input.conversationId,
+      error: err instanceof Error ? err.message : err,
+    });
+  }
 
   return handoff;
 }

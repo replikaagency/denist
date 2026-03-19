@@ -151,7 +151,7 @@ export function applyFallbacks(
       applied: true,
       rewrittenReply:
         "Quiero asegurarme de ayudarte bien. ¿Podrías contarme un poco más sobre lo que necesitas? " +
-        "Por ejemplo, ¿quieres reservar una cita, tienes alguna pregunta sobre nuestros servicios o tienes alguna molestia dental?",
+        "Por ejemplo, ¿quieres enviar una solicitud de cita, tienes alguna pregunta sobre nuestros servicios o tienes alguna molestia dental?",
       reason: "Could not classify intent — using guided clarification.",
     };
   }

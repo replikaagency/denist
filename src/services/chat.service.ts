@@ -207,7 +207,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       state.reschedule_target_id = null;
       state.reschedule_target_summary = null;
       const declineReply = wasReschedule
-        ? 'Entendido, tu cita se queda como estaba. ¿Hay algo más en lo que pueda ayudarte?'
+        ? 'Entendido, tu solicitud de cita se queda como estaba. ¿Hay algo más en lo que pueda ayudarte?'
         : 'Entendido, no hay problema. ¿Te gustaría cambiar algún detalle o hay algo más en lo que pueda ayudarte?';
       const aiMessage = await insertMessage({
         conversation_id, role: 'ai', content: declineReply,
@@ -222,8 +222,13 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     state.confirmation_attempts = attempts;
 
     if (attempts >= 2) {
+      console.warn('[ChatService] confirmation_escalated', { conversation_id, attempts });
       state.awaiting_confirmation = false;
       state.pending_appointment = null;
+      state.confirmation_attempts = 0;
+      state.reschedule_phase = 'idle';
+      state.reschedule_target_id = null;
+      state.reschedule_target_summary = null;
       state.escalated = true;
       state.escalation_reason = 'Patient could not confirm appointment after 2 attempts.';
       await createHandoff({
@@ -233,7 +238,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
         triggerMessageId: patientMessage.id,
       });
       const escalateReply =
-        'No me ha quedado claro si quieres confirmar la cita. Voy a conectarte con un miembro de nuestro equipo para que puedan ayudarte directamente.';
+        'No me ha quedado claro si quieres confirmar tu solicitud. Voy a conectarte con un miembro de nuestro equipo para que puedan ayudarte directamente.';
       const aiMessage = await insertMessage({
         conversation_id, role: 'ai', content: escalateReply,
         metadata: { type: 'confirmation_escalated' },
@@ -299,7 +304,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     delete meta.reschedule_options;
     delete meta.reschedule_options_count;
 
-    const reply = `Perfecto, vamos a cambiar tu cita de **${chosen.summary}**.\n\n¿Para cuándo te gustaría la nueva cita? Dime el servicio, fecha y horario que prefieras.`;
+    const reply = `Perfecto, vamos a cambiar tu solicitud de cita de **${chosen.summary}**.\n\n¿Para cuándo te gustaría la nueva? Dime el servicio, fecha y horario que prefieras.`;
     const aiMsg = await insertMessage({ conversation_id, role: 'ai', content: reply, metadata: { type: 'reschedule_target_locked', target_id: chosen.id } });
     return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
   }
@@ -335,7 +340,23 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   }
 
   // 10. Call LLM
-  const llmResult = await callLLM(systemPrompt, llmMessages);
+  let llmResult: Awaited<ReturnType<typeof callLLM>>;
+  try {
+    llmResult = await callLLM(systemPrompt, llmMessages);
+  } catch (err) {
+    console.error('[ChatService] llm_call_failed', {
+      conversation_id,
+      error: err instanceof Error ? err.message : err,
+    });
+    const clinicPhone = process.env.CLINIC_PHONE ?? '[teléfono de la clínica]';
+    const fallbackMessage = await insertMessage({
+      conversation_id,
+      role: 'ai',
+      content: `Disculpa, ha habido un problema técnico. Por favor, contacta directamente con la clínica al ${clinicPhone}.`,
+      metadata: { type: 'llm_error_fallback' },
+    });
+    return { message: fallbackMessage, contact, conversation, turnResult: null };
+  }
 
   // 11. Process turn through the conversation engine
   const turnResult = processTurn(llmResult.text, state);
@@ -395,7 +416,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
 
     if (openRequests.length === 0) {
       turnResult.reply =
-        'No encuentro ninguna cita pendiente asociada a tu cuenta. ¿Te gustaría reservar una cita nueva?';
+        'No encuentro ninguna cita pendiente asociada a tu cuenta. ¿Te gustaría enviar una nueva solicitud de cita?';
       turnResult.state.current_intent = 'appointment_request';
     } else if (openRequests.length === 1) {
       const target = openRequests[0];
@@ -408,7 +429,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       turnResult.state.offer_appointment_pending = false;
       turnResult.state.appointment_request_open = false;
       turnResult.reply =
-        `Veo que tienes una cita de **${summary}**. ¿Para cuándo te gustaría cambiarla? Dime la nueva fecha, horario y servicio si quieres modificarlo.`;
+        `Veo que tienes una solicitud de cita de **${summary}**. ¿Para cuándo te gustaría cambiarla? Dime la nueva fecha, horario y servicio si quieres modificarlo.`;
     } else {
       const options = openRequests.map((req) => ({ id: req.id, summary: summarizeRequest(req) }));
       turnResult.state.reschedule_phase = 'selecting_target';

@@ -108,7 +108,7 @@ export function ChatUI() {
         setMessages(incoming);
       }
     } catch (err) {
-      setError("Could not connect to the server. Please try again.");
+      setError("No se ha podido conectar. Por favor, inténtalo de nuevo.");
     } finally {
       setInitializing(false);
     }
@@ -203,7 +203,7 @@ export function ChatUI() {
       const json = await res.json();
 
       if (!json.ok) {
-        setError(json.error?.message ?? "Failed to send message");
+        setError(json.error?.message ?? "No se ha podido enviar el mensaje");
         return;
       }
 
@@ -224,7 +224,7 @@ export function ChatUI() {
         setIsHandedOff(true);
       }
     } catch (err) {
-      setError("Connection error. Please try again.");
+      setError("Error de conexión. Por favor, inténtalo de nuevo.");
     } finally {
       setIsTyping(false);
     }
@@ -239,11 +239,11 @@ export function ChatUI() {
           </div>
           <div className="flex-1">
             <CardTitle className="text-sm font-semibold">
-              {process.env.NEXT_PUBLIC_CLINIC_NAME ?? "Our Dental Practice"}
+              {process.env.NEXT_PUBLIC_CLINIC_NAME ?? "Clínica Dental"}
             </CardTitle>
             <CardDescription className="flex items-center gap-1.5 text-xs">
               <span className="size-1.5 rounded-full bg-emerald-500" />
-              AI Receptionist · Online
+              Recepcionista · En línea
             </CardDescription>
           </div>
           {!initializing && messages.length > 0 && (
@@ -255,7 +255,7 @@ export function ChatUI() {
               title="Start a new conversation"
             >
               <RotateCcw className="size-3" />
-              {confirmNew ? "Confirm?" : "New chat"}
+              {confirmNew ? "¿Confirmar?" : "Nueva conversación"}
             </Button>
           )}
         </div>
@@ -265,7 +265,7 @@ export function ChatUI() {
         <div className="flex flex-col gap-4">
           {initializing && messages.length === 0 && (
             <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
-              Starting conversation...
+              Iniciando conversación...
             </div>
           )}
 
@@ -279,7 +279,7 @@ export function ChatUI() {
                   if (!conversationId) startConversation();
                 }}
               >
-                Retry
+                Reintentar
               </button>
             </div>
           )}
@@ -311,7 +311,7 @@ export function ChatUI() {
         <CardFooter className="border-t px-4 py-3">
           <div className="flex w-full items-center justify-center gap-2 rounded-md bg-amber-50 px-4 py-2.5 text-sm text-amber-700 border border-amber-200">
             <span className="size-2 animate-pulse rounded-full bg-amber-500" />
-            A staff member will be with you shortly.
+            En breve un miembro del equipo te atenderá.
           </div>
         </CardFooter>
       ) : (
@@ -325,7 +325,7 @@ export function ChatUI() {
           >
             <Input
               className="h-10 flex-1 text-sm"
-              placeholder="Type your message…"
+              placeholder="Escribe tu mensaje..."
               value={input}
               onChange={(e) => setInput(e.target.value)}
               disabled={isTyping || initializing || !conversationId}
