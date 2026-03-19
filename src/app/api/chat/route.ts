@@ -17,14 +17,14 @@ export async function POST(request: NextRequest) {
     const ip = getClientIp(request);
     const ipLimit = checkRateLimit(`chat-ip:${ip}`, LIMITS.MAX_MESSAGES_PER_MINUTE * 5, 60_000);
     if (!ipLimit.allowed) {
-      return errorResponse('RATE_LIMITED', 'Too many requests from this address.', 429);
+      return errorResponse('RATE_LIMITED', 'Demasiadas solicitudes desde esta dirección. Por favor, espera un momento.', 429);
     }
     const rateLimitKey = `chat:${parsed.data.session_token}`;
     const limit = checkRateLimit(rateLimitKey, LIMITS.MAX_MESSAGES_PER_MINUTE, 60_000);
     if (!limit.allowed) {
       return errorResponse(
         'RATE_LIMITED',
-        'Too many messages. Please wait a moment before sending another.',
+        'Demasiados mensajes seguidos. Por favor, espera un momento antes de enviar otro.',
         429,
       );
     }

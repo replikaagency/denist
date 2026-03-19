@@ -164,9 +164,8 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
             appointment: pendingAppointment,
           });
           confirmReply =
-            'Tu cita anterior ya había sido modificada por nuestro equipo, ' +
-            'así que he registrado tu nueva solicitud directamente. ' +
-            'Nos pondremos en contacto contigo pronto. ¿Hay algo más?';
+            'Tu solicitud ha quedado registrada. Nuestro equipo se pondrá en contacto contigo para confirmar el horario. ' +
+            '¿Hay algo más en lo que pueda ayudarte?';
         }
       } else {
         await createRequest({
@@ -249,7 +248,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
 
     // Ask again.
     const clarifyReply =
-      'Perdona, no lo he entendido bien. ¿Confirmas la solicitud de cita? Responde **sí** para confirmar o **no** si prefieres cambiar algo.';
+      'Perdona, no lo he entendido bien. ¿Confirmas la solicitud de cita? Responde "sí" para confirmar o "no" si prefieres cambiar algo.';
     const aiMessage = await insertMessage({
       conversation_id, role: 'ai', content: clarifyReply,
       metadata: { type: 'awaiting_confirmation', attempts },
@@ -304,7 +303,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     delete meta.reschedule_options;
     delete meta.reschedule_options_count;
 
-    const reply = `Perfecto, vamos a cambiar tu solicitud de cita de **${chosen.summary}**.\n\n¿Para cuándo te gustaría la nueva? Dime el servicio, fecha y horario que prefieras.`;
+    const reply = `Perfecto, vamos a cambiar tu solicitud de cita de ${chosen.summary}.\n\n¿Para cuándo te gustaría la nueva? Dime el servicio, fecha y horario que prefieras.`;
     const aiMsg = await insertMessage({ conversation_id, role: 'ai', content: reply, metadata: { type: 'reschedule_target_locked', target_id: chosen.id } });
     return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
   }
@@ -429,7 +428,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       turnResult.state.offer_appointment_pending = false;
       turnResult.state.appointment_request_open = false;
       turnResult.reply =
-        `Veo que tienes una solicitud de cita de **${summary}**. ¿Para cuándo te gustaría cambiarla? Dime la nueva fecha, horario y servicio si quieres modificarlo.`;
+        `Veo que tienes una solicitud de cita de ${summary}. ¿Para cuándo te gustaría cambiarla? Dime la nueva fecha, horario y servicio si quieres modificarlo.`;
     } else {
       const options = openRequests.map((req) => ({ id: req.id, summary: summarizeRequest(req) }));
       turnResult.state.reschedule_phase = 'selecting_target';
@@ -654,7 +653,7 @@ function buildConfirmationSummary(
   if (appointment.preferred_date) lines.push(`• Fecha preferida: ${appointment.preferred_date}`);
   if (appointment.preferred_time) lines.push(`• Horario: ${appointment.preferred_time}`);
   if (appointment.preferred_provider) lines.push(`• Dentista: ${appointment.preferred_provider}`);
-  lines.push('\n¿Confirmas que quieres registrar esta solicitud? Responde **sí** para confirmar o **no** si quieres cambiar algo.');
+  lines.push('\n¿Confirmas que quieres registrar esta solicitud? Responde "sí" para confirmar o "no" si quieres cambiar algo.');
   return lines.join('\n');
 }
 
@@ -711,13 +710,13 @@ function buildRescheduleConfirmationSummary(
   newAppointment: import('@/lib/conversation/schema').ConversationState['appointment'],
 ): string {
   const lines: string[] = ['Antes de hacer el cambio, confirma los datos:'];
-  lines.push(`\n**Cita actual:** ${oldSummary}`);
-  lines.push('\n**Nueva cita:**');
+  lines.push(`\nCita actual: ${oldSummary}`);
+  lines.push('\nNueva cita:');
   if (patient.full_name) lines.push(`• Nombre: ${patient.full_name}`);
   if (newAppointment.service_type) lines.push(`• Servicio: ${newAppointment.service_type}`);
   if (newAppointment.preferred_date) lines.push(`• Fecha: ${newAppointment.preferred_date}`);
   if (newAppointment.preferred_time) lines.push(`• Horario: ${newAppointment.preferred_time}`);
   if (newAppointment.preferred_provider) lines.push(`• Dentista: ${newAppointment.preferred_provider}`);
-  lines.push('\n¿Confirmas el cambio? Responde **sí** para confirmar o **no** si prefieres dejarlo como está.');
+  lines.push('\n¿Confirmas el cambio? Responde "sí" para confirmar o "no" si prefieres dejarlo como está.');
   return lines.join('\n');
 }

@@ -7,5 +7,5 @@ export const LIMITS = {
 
 export function getAIGreeting(): string {
   const name = process.env.NEXT_PUBLIC_CLINIC_NAME ?? "nuestra clínica dental";
-  return `¡Hola! Bienvenido/a a ${name}. Estoy aquí para ayudarte con citas, preguntas sobre nuestros servicios, seguros o cualquier otra consulta. ¿En qué puedo ayudarte hoy?`;
+  return `¡Hola! Bienvenido a ${name}. Estoy aquí para ayudarte con citas, preguntas sobre nuestros servicios, seguros o cualquier otra consulta. ¿En qué puedo ayudarte hoy?`;
 }
