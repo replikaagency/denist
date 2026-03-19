@@ -199,7 +199,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
 
       const aiMessage = await insertMessage({
         conversation_id, role: 'ai', content: confirmReply,
-        metadata: { type: isReschedule ? 'reschedule_confirmed' : 'appointment_confirmed' },
+        metadata: { type: isReschedule ? 'reschedule_confirmed' : 'appointment_confirmed', classifier_result: 'yes', path: 'confirmation_intercept' },
       });
       const finalConversation = await saveState(conversation_id, state);
       return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
@@ -216,10 +216,10 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       state.reschedule_target_summary = null;
       const declineReply = wasReschedule
         ? 'Entendido, tu solicitud de cita se queda como estaba. ¿Hay algo más en lo que pueda ayudarte?'
-        : 'Entendido, no hay problema. ¿Te gustaría cambiar algún detalle o hay algo más en lo que pueda ayudarte?';
+        : 'Entendido. ¿Qué dato te gustaría cambiar? Dime la fecha, la hora o el servicio que prefieres y lo actualizo.';
       const aiMessage = await insertMessage({
         conversation_id, role: 'ai', content: declineReply,
-        metadata: { type: wasReschedule ? 'reschedule_declined' : 'appointment_declined' },
+        metadata: { type: wasReschedule ? 'reschedule_declined' : 'appointment_declined', classifier_result: 'no', path: 'confirmation_intercept' },
       });
       const finalConversation = await saveState(conversation_id, state);
       return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
@@ -249,7 +249,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
         'No me ha quedado claro si quieres confirmar tu solicitud. Voy a conectarte con un miembro de nuestro equipo para que puedan ayudarte directamente.';
       const aiMessage = await insertMessage({
         conversation_id, role: 'ai', content: escalateReply,
-        metadata: { type: 'confirmation_escalated' },
+        metadata: { type: 'confirmation_escalated', classifier_result: 'ambiguous', path: 'confirmation_intercept' },
       });
       const finalConversation = await saveState(conversation_id, state);
       return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
@@ -260,7 +260,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       'Perdona, no lo he entendido bien. ¿Confirmas la solicitud de cita? Responde "sí" para confirmar o "no" si prefieres cambiar algo.';
     const aiMessage = await insertMessage({
       conversation_id, role: 'ai', content: clarifyReply,
-      metadata: { type: 'awaiting_confirmation', attempts },
+      metadata: { type: 'awaiting_confirmation', attempts, classifier_result: 'ambiguous', path: 'confirmation_intercept' },
     });
     const finalConversation = await saveState(conversation_id, state);
     return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
