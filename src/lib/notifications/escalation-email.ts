@@ -5,7 +5,7 @@ export interface EscalationEmailData {
   patientName: string | null;
   patientPhone: string | null;
   reason: string | null;
-  escalationType: 'emergency' | 'human' | null;
+  escalationType: 'emergency' | 'urgent' | 'human' | null;
 }
 
 /**
@@ -33,8 +33,10 @@ export async function sendEscalationEmail(data: EscalationEmailData): Promise<vo
   const patientDisplay = data.patientName ?? 'Paciente desconocido';
   const phoneDisplay = data.patientPhone ?? 'No disponible';
   const reasonDisplay = data.reason ?? 'Sin motivo especificado';
-  const isEmergency = data.escalationType === 'emergency';
-  const typeLabel = isEmergency ? 'URGENCIA' : 'Requiere atención humana';
+  const typeLabel =
+    data.escalationType === 'emergency' ? 'URGENCIA' :
+    data.escalationType === 'urgent'    ? 'URGENTE'  :
+    'Requiere atención humana';
   const subject = `[${typeLabel}] Nueva escalación — ${patientDisplay}`;
 
   const body = [

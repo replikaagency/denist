@@ -32,7 +32,7 @@ import { getMissingFields, getNextFieldPrompt } from "./fields";
 export interface EscalationDecision {
   shouldEscalate: boolean;
   reason: string | null;
-  type: "emergency" | "human" | null;
+  type: "emergency" | "urgent" | "human" | null;
 }
 
 /**
@@ -54,6 +54,27 @@ export function checkEscalation(
       shouldEscalate: true,
       reason: output.urgency_reasoning || "Emergency-level urgency detected.",
       type: "emergency",
+    };
+  }
+
+  // Rule 1b: Urgent urgency escalates to staff (not emergency services)
+  if (output.urgency === "urgent") {
+    return {
+      shouldEscalate: true,
+      reason: output.urgency_reasoning || "Urgent-level urgency detected.",
+      type: "urgent",
+    };
+  }
+
+  // Rule 1c: post_treatment_concern with alarm symptoms escalates as urgent
+  if (
+    output.intent === "post_treatment_concern" &&
+    /sangr[ao]|fiebre|hinchaz[oó]n|infecci[oó]n/i.test(output.symptoms?.description ?? "")
+  ) {
+    return {
+      shouldEscalate: true,
+      reason: "Post-treatment concern with alarm symptom detected.",
+      type: "urgent",
     };
   }
 
@@ -116,6 +137,28 @@ export interface FallbackResult {
   applied: boolean;
   rewrittenReply: string | null;
   reason: string | null;
+}
+
+/**
+ * Builds a natural-language summary of the data collected so far.
+ * Omits any field that is missing — never mentions gaps to the patient.
+ */
+function buildCompletionSummary(state: ConversationState): string {
+  const parts: string[] = [];
+  if (state.patient.full_name) parts.push(state.patient.full_name);
+  if (state.patient.phone)     parts.push(state.patient.phone);
+  const date = state.appointment.preferred_date;
+  const time = state.appointment.preferred_time;
+  const timeLabel =
+    time === "morning"   ? "mañana" :
+    time === "afternoon" ? "tarde"  :
+    time ?? null;
+  if (date && timeLabel) parts.push(`${date} por la ${timeLabel}`);
+  else if (date)         parts.push(date);
+  else if (timeLabel)    parts.push(`por la ${timeLabel}`);
+
+  const summary = parts.length > 0 ? `Te lo dejo anotado: ${parts.join(", ")}. ` : "";
+  return `${summary}El equipo se pondrá en contacto contigo para confirmar la disponibilidad. ¿Hay algo más en lo que pueda ayudarte?`;
 }
 
 /**
@@ -190,8 +233,7 @@ export function applyFallbacks(
   if (isSchedulingIntent && isCompletionAction && misleadingPhrases.some((p) => replyLower.includes(p))) {
     return {
       applied: true,
-      rewrittenReply:
-        "Tu solicitud ya está registrada. Hemos anotado tu preferencia y el equipo se pondrá en contacto contigo para confirmar la disponibilidad. ¿Hay algo más en lo que pueda ayudarte?",
+      rewrittenReply: buildCompletionSummary(state),
       reason: "Reply implied checking availability — replaced with clear final confirmation.",
     };
   }
@@ -199,8 +241,14 @@ export function applyFallbacks(
   return NO_FALLBACK;
 }
 
-function stripDiagnosisFromReply(reply: string): string {
-  return reply + "\n\n(Nota: No puedo proporcionar un diagnóstico. Te recomendaría pedir cita para que el dentista pueda evaluarlo correctamente.)";
+function stripDiagnosisFromReply(_reply: string): string {
+  const phone = process.env.CLINIC_PHONE ?? "";
+  const phoneClause = phone ? ` al ${phone}` : "";
+  return (
+    `No estoy en posición de valorar síntomas médicos. ` +
+    `Para cualquier consulta clínica, contacta directamente con la clínica${phoneClause}. ` +
+    `¿Hay algo más en lo que pueda ayudarte, como solicitar una cita?`
+  );
 }
 
 function stripPricingFromReply(reply: string): string {
@@ -705,6 +753,12 @@ export function processTurn(
     if (escalation.type === "emergency") {
       reply += "\n\nEstoy contactando ahora mismo con nuestro equipo de urgencias. " +
         "Si crees que es una emergencia con riesgo vital, llama al 112 inmediatamente.";
+    } else if (escalation.type === "urgent") {
+      const emergencyPhone = process.env.CLINIC_EMERGENCY_PHONE ?? "";
+      const phoneClause = emergencyPhone
+        ? ` Si el dolor es muy intenso, puedes llamar directamente al ${emergencyPhone}.`
+        : "";
+      reply += `\n\nEntiendo que tienes una molestia urgente. Voy a avisar al equipo de la clínica para que te contacten lo antes posible.${phoneClause}`;
     } else {
       reply += "\n\nDéjame conectarte con un miembro de nuestro equipo que podrá ayudarte mejor. " +
         "Un momento, por favor.";
@@ -728,6 +782,25 @@ export function processTurn(
   ) {
     const missing = getMissingFields(
       newState.current_intent,
+      { patient: newState.patient, appointment: newState.appointment, symptoms: newState.symptoms },
+    );
+    if (missing.length === 0) {
+      newState.completed = true;
+    }
+  }
+
+  // Completion check for appointment_cancel.
+  // Separate block because cancel lives in non_scheduling stage and uses
+  // confirm_details (not offer_appointment) as its terminal action.
+  if (
+    newState.current_intent === "appointment_cancel" &&
+    !escalation.shouldEscalate &&
+    !fallback.applied &&
+    (correctedOutput.next_action === "confirm_details" ||
+      correctedOutput.next_action === "ask_field")
+  ) {
+    const missing = getMissingFields(
+      "appointment_cancel",
       { patient: newState.patient, appointment: newState.appointment, symptoms: newState.symptoms },
     );
     if (missing.length === 0) {
