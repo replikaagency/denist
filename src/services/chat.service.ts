@@ -173,8 +173,8 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
             appointment: pendingAppointment,
           });
           confirmReply =
-            'Tu solicitud ha quedado registrada. Nuestro equipo se pondrá en contacto contigo para confirmar el horario. ' +
-            '¿Hay algo más en lo que pueda ayudarte?';
+            'Tu cita original ya fue gestionada por el equipo. He registrado una nueva solicitud con tus nuevas preferencias. ' +
+            'Te contactaremos en horario de atención para confirmar. ¿Hay algo más en lo que pueda ayudarte?';
         }
       } else {
         await createRequest({
@@ -184,7 +184,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
           appointment: pendingAppointment,
         });
         confirmReply =
-          '¡Perfecto! Tu solicitud de cita ha quedado registrada. Nuestro equipo se pondrá en contacto contigo para confirmar el horario. ¿Hay algo más en lo que pueda ayudarte?';
+          '¡Perfecto! Tu solicitud ha quedado registrada. Nuestro equipo te contactará en horario de atención para confirmar disponibilidad. ¿Hay algo más en lo que pueda ayudarte?';
       }
 
       // Clear ALL confirmation + reschedule state.
