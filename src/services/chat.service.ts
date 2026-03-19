@@ -73,6 +73,11 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     throw AppError.conflict('Esta conversación está cerrada.');
   }
 
+  console.log('[ChatService] turn_start', {
+    conversation_id,
+    user_message: content.slice(0, 200),
+  });
+
   // 4. Persist patient message
   const patientMessage = await insertMessage({
     conversation_id,
@@ -127,6 +132,10 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     } else {
       const pendingAppointment = state.pending_appointment; // non-null inside this block
       const confirmation = classifyConfirmation(content);
+      console.log('[ChatService] confirmation_classified', {
+        conversation_id,
+        result: confirmation,
+      });
 
     if (confirmation === 'yes') {
       // Patient confirmed — resolve lead, then create or reschedule.
@@ -381,6 +390,13 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     };
   }
 
+  console.log('[ChatService] turn_processed', {
+    conversation_id,
+    intent: turnResult.rawOutput.intent,
+    intent_confidence: turnResult.rawOutput.intent_confidence,
+    fallback_applied: turnResult.fallback.applied,
+  });
+
   // Phase 5: log unexpected flow overrides (engine corrected LLM's next_action)
   if (turnResult.flowValidation.overridden) {
     console.warn('[ChatService] unexpected_flow', {
@@ -599,6 +615,11 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       escalated: turnResult.escalation.shouldEscalate,
       fallback_applied: turnResult.fallback.applied,
     },
+  });
+
+  console.log('[ChatService] turn_complete', {
+    conversation_id,
+    response_preview: aiMessage.content.slice(0, 150),
   });
 
   // 14. Save updated state — returns updated Conversation, eliminating a second DB read.
