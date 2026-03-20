@@ -45,9 +45,10 @@ export async function resolveContact(identifier: ContactIdentifier): Promise<Con
       return createContact({ phone: normalizedPhone });
     }
     case 'email': {
-      const existing = await findContactByEmail(identifier.email);
+      const normalizedEmail = identifier.email.toLowerCase().trim();
+      const existing = await findContactByEmail(normalizedEmail);
       if (existing) return existing;
-      return createContact({ email: identifier.email });
+      return createContact({ email: normalizedEmail });
     }
   }
 }
@@ -69,7 +70,7 @@ export async function enrichContact(
     if (parts.length > 1) patch.last_name = parts.slice(1).join(' ');
   }
   if (fields.phone) patch.phone = normalizePhone(fields.phone);
-  if (fields.email) patch.email = fields.email;
+  if (fields.email) patch.email = fields.email.toLowerCase().trim();
   if (fields.insurance_provider) patch.insurance_provider = fields.insurance_provider;
   if (fields.new_or_returning !== undefined && fields.new_or_returning !== null) {
     patch.is_new_patient = fields.new_or_returning === 'new';
@@ -81,7 +82,17 @@ export async function enrichContact(
     patch.email as string | undefined,
     patch.phone as string | undefined,
   );
-  if (duplicate && duplicate.id !== contactId) return null;
+  if (duplicate && duplicate.id !== contactId) {
+    // Returning patient: a canonical contact already owns this phone/email.
+    // Merge only fields that are null on the canonical record — never overwrite.
+    const mergeFields: Record<string, unknown> = {};
+    if (!duplicate.first_name  && patch.first_name)  mergeFields.first_name  = patch.first_name;
+    if (!duplicate.last_name   && patch.last_name)   mergeFields.last_name   = patch.last_name;
+    if (!duplicate.insurance_provider && patch.insurance_provider)
+      mergeFields.insurance_provider = patch.insurance_provider;
+    if (Object.keys(mergeFields).length > 0) await updateContact(duplicate.id, mergeFields);
+    return duplicate; // caller re-links the conversation to this canonical contact
+  }
 
   return updateContact(contactId, patch);
 }

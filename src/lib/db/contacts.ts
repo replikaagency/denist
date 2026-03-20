@@ -93,7 +93,7 @@ export async function findContactByEmail(email: string): Promise<Contact | null>
   const { data, error } = await db()
     .from('contacts')
     .select('*')
-    .eq('email', email)
+    .eq('email', email.toLowerCase().trim())
     .maybeSingle();
 
   if (error) throw AppError.database('Failed to look up contact by email', error);
@@ -115,7 +115,7 @@ export async function findContactByEmailOrPhone(
     const { data, error } = await supabase
       .from('contacts')
       .select('*')
-      .eq('email', email)
+      .eq('email', email.toLowerCase().trim())
       .maybeSingle();
     if (error) throw AppError.database('Failed to look up contact by email', error);
     if (data) return data as Contact;

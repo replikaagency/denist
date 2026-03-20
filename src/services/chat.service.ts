@@ -530,21 +530,22 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   if (hasPatientFields || turnResult.rawOutput.patient_fields?.full_name) {
     const enriched = await enrichContact(contact.id, turnResult.rawOutput.patient_fields);
     if (enriched) {
+      if (enriched.id !== contact.id) {
+        // Returning patient: enrichContact resolved to the canonical contact.
+        // Relink this conversation so staff sees the correct identity.
+        await updateConversation(conversation_id, { contact_id: enriched.id });
+      }
       updatedContact = enriched;
-    } else {
-      // Phase 3: null means a duplicate phone/email was detected — log and continue.
-      console.warn('[ChatService] enrichContact returned null — possible duplicate phone/email', {
-        conversation_id,
-        contact_id: contact.id,
-      });
     }
   }
 
   // Phase 4: hoist lead — ensureLead is called at most once per turn.
+  // Uses updatedContact.id so a returning patient's lead is found on the
+  // canonical contact, not created anew on the anonymous session contact.
   const isIdentified = updatedContact.first_name && (updatedContact.phone || updatedContact.email);
   let lead: Lead | null = null;
   if (isIdentified) {
-    lead = await ensureLead(contact.id);
+    lead = await ensureLead(updatedContact.id);
     await updateConversation(conversation_id, { lead_id: lead.id });
   }
 

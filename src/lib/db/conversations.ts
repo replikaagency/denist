@@ -74,7 +74,7 @@ export async function updateConversationStatus(
 
 export async function updateConversation(
   id: string,
-  patch: Partial<Pick<Conversation, 'status' | 'ai_enabled' | 'summary' | 'lead_id' | 'last_message_at' | 'metadata'>>,
+  patch: Partial<Pick<Conversation, 'status' | 'ai_enabled' | 'summary' | 'lead_id' | 'last_message_at' | 'metadata' | 'contact_id'>>,
 ): Promise<Conversation> {
   const { data, error } = await db()
     .from('conversations')
