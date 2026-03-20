@@ -28,6 +28,27 @@ import { createHandoff } from './handoff.service';
 
 import type { Contact, Conversation, Lead, Message } from '@/types/database';
 
+/**
+ * Regex-based fallback name extractor for Spanish input.
+ * Returns a trimmed name string, or null if no pattern matched.
+ * Used when the LLM fails to populate patient_fields.full_name.
+ */
+function extractNameFallback(message: string): string | null {
+  const normalized = message.trim();
+  const patterns = [
+    /(?:me\s+llamo|mi\s+nombre\s+es|soy|llámame|me\s+llaman)\s+([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+(?:\s+[A-ZÁÉÍÓÚÜÑA-Za-záéíóúüñ][a-záéíóúüñA-Za-z]+)*)/i,
+  ];
+  for (const re of patterns) {
+    const m = normalized.match(re);
+    if (m?.[1]) {
+      const name = m[1].trim();
+      // Reject single-char matches and obviously non-name words
+      if (name.length >= 2 && !/^\d+$/.test(name)) return name;
+    }
+  }
+  return null;
+}
+
 export interface ChatTurnInput {
   session_token: string;
   conversation_id: string;
@@ -353,7 +374,8 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       symptoms: state.symptoms,
     };
     const missing = getMissingFields(state.current_intent, filledFields);
-    const useCompletionExample = isSchedulingIntent && missing.length === 0;
+    const useCompletionExample = isSchedulingIntent && missing.length === 0
+      && !state.completed && !state.appointment_request_open;
 
     const example = useCompletionExample
       ? FEW_SHOT_BY_INTENT['appointment_completion']
@@ -491,7 +513,21 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   const hasPatientFields = turnResult.rawOutput.patient_fields &&
     Object.values(turnResult.rawOutput.patient_fields).some(v => v !== null && v !== undefined);
 
-  if (hasPatientFields) {
+  // Fallback name extraction: if the LLM didn't populate full_name but the
+  // patient's message contains a recognisable "me llamo X" pattern, inject it.
+  if (!turnResult.rawOutput.patient_fields?.full_name && !state.patient.full_name) {
+    const fallbackName = extractNameFallback(content);
+    if (fallbackName) {
+      turnResult.rawOutput.patient_fields = {
+        ...turnResult.rawOutput.patient_fields,
+        full_name: fallbackName,
+      };
+      turnResult.state.patient = { ...turnResult.state.patient, full_name: fallbackName };
+      console.log('[ChatService] name_fallback_applied', { fallbackName, conversation_id });
+    }
+  }
+
+  if (hasPatientFields || turnResult.rawOutput.patient_fields?.full_name) {
     const enriched = await enrichContact(contact.id, turnResult.rawOutput.patient_fields);
     if (enriched) {
       updatedContact = enriched;
@@ -593,17 +629,15 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       });
       turnResult.state.offer_appointment_pending = false;
       turnResult.state.appointment_request_open = true;
-    } else if (appointmentDataReady || appointmentActionFired) {
+    } else if (appointmentDataReady || appointmentActionFired || engineCompletedAppointment) {
       // First booking: enter the explicit confirmation flow.
       // No DB row is created yet — we store the snapshot in state and ask the
       // patient to confirm before writing anything.
-      // appointmentActionFired is included as a trigger because when the LLM
-      // fires offer_appointment and the flow controller did NOT override it
-      // (implying stage='ready', all required fields present), we must show
-      // confirmation even if date/time normalization fails (e.g. "martes" is
-      // semantically complete but not ISO-parseable). Without this, the LLM's
-      // "He anotado tu solicitud" reply would pass through with no DB write and
-      // no confirmation prompt shown to the patient.
+      // appointmentActionFired: LLM fired offer_appointment explicitly.
+      // engineCompletedAppointment: engine completion check determined all fields
+      //   are present (via ask_field + getMissingFields=[]) even when LLM did not
+      //   fire offer_appointment (flow controller may have overridden it). Without
+      //   this, the few-shot "Te lo dejo anotado..." reply passes through unblocked.
       turnResult.state.awaiting_confirmation = true;
       turnResult.state.pending_appointment = { ...turnResult.state.appointment };
       turnResult.state.confirmation_attempts = 0;
@@ -726,7 +760,7 @@ function classifyConfirmation(text: string): 'yes' | 'no' | 'ambiguous' {
   // the conditional conjunction "si" as an affirmative, which would create the appointment.
   const UNCERTAINTY = /\b(no se|no lo se|no estoy seguro|no sabria|no tengo claro)\b/;
   if (UNCERTAINTY.test(t)) return 'ambiguous';
-  const YES = /\b(si|yes|confirmo|confirmar|correcto|exacto|adelante|perfecto|de acuerdo|ok|claro|por supuesto|genial|eso es|afirmo|afirmativo|dale|bueno|vamos)\b/;
+  const YES = /\b(si|yes|confirmo|confirmar|correcto|exacto|adelante|perfecto|de acuerdo|ok|claro|por supuesto|genial|eso es|afirmo|afirmativo|dale|vamos)\b/;
   const NO = /\b(no|cancelar|cancel|mejor no|prefiero no|cambiar|espera|detener|nope|negativo|olvida|olvidalo|olvídalo)\b/;
   const CORRECTION = /\b(pero|aunque|en vez de|mejor|cambia|cambiar|no la fecha|no la hora|sino)\b/;
   if (YES.test(t)) {

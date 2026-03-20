@@ -6,6 +6,7 @@ import {
   updateContact,
   findContactByEmailOrPhone,
 } from '@/lib/db/contacts';
+import { normalizePhone } from '@/lib/phone';
 import type { Contact } from '@/types/database';
 import type { PatientFields } from '@/lib/conversation/schema';
 
@@ -38,9 +39,10 @@ export async function resolveContact(identifier: ContactIdentifier): Promise<Con
     }
     case 'whatsapp':
     case 'sms': {
-      const existing = await findContactByPhone(identifier.phone);
+      const normalizedPhone = normalizePhone(identifier.phone);
+      const existing = await findContactByPhone(normalizedPhone);
       if (existing) return existing;
-      return createContact({ phone: identifier.phone });
+      return createContact({ phone: normalizedPhone });
     }
     case 'email': {
       const existing = await findContactByEmail(identifier.email);
@@ -66,7 +68,7 @@ export async function enrichContact(
     patch.first_name = parts[0];
     if (parts.length > 1) patch.last_name = parts.slice(1).join(' ');
   }
-  if (fields.phone) patch.phone = fields.phone;
+  if (fields.phone) patch.phone = normalizePhone(fields.phone);
   if (fields.email) patch.email = fields.email;
   if (fields.insurance_provider) patch.insurance_provider = fields.insurance_provider;
   if (fields.new_or_returning !== undefined && fields.new_or_returning !== null) {

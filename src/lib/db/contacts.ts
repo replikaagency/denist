@@ -1,5 +1,6 @@
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 import { AppError } from '@/lib/errors';
+import { normalizePhone } from '@/lib/phone';
 import type { Contact } from '@/types/database';
 
 const db = () => createSupabaseAdminClient();
@@ -77,7 +78,7 @@ export async function findContactByPhone(phone: string): Promise<Contact | null>
   const { data, error } = await db()
     .from('contacts')
     .select('*')
-    .eq('phone', phone)
+    .eq('phone', normalizePhone(phone))
     .maybeSingle();
 
   if (error) throw AppError.database('Failed to look up contact by phone', error);
@@ -124,7 +125,7 @@ export async function findContactByEmailOrPhone(
     const { data, error } = await supabase
       .from('contacts')
       .select('*')
-      .eq('phone', phone)
+      .eq('phone', normalizePhone(phone))
       .maybeSingle();
     if (error) throw AppError.database('Failed to look up contact by phone', error);
     if (data) return data as Contact;

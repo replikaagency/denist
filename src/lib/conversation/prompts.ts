@@ -189,6 +189,9 @@ function buildFieldCollectionLayer(): string {
    Para el campo patient_fields.new_or_returning usa SOLO los valores "new" o "returning":
    - "new" → paciente dice: "es mi primera vez", "nunca he venido", "soy paciente nuevo", "no he ido antes", "nunca he ido", "primera visita", "no os conozco", "es la primera vez", "no he estado nunca".
    - "returning" → paciente dice: "ya he venido", "soy paciente vuestro", "ya os conozco", "he ido antes", "tengo ficha", "he estado otras veces", "soy paciente habitual".
+   Para el campo patient_fields.full_name: extrae el nombre siempre que el paciente lo mencione, aunque use expresiones como:
+   - "me llamo Álvaro", "mi nombre es Carmen", "soy Juan", "llámame Rosa", "me llaman Pepe García".
+   Extrae SOLO el nombre propio (y apellido si lo dice), sin las palabras "me llamo", "soy", etc. Ejemplos: "me llamo Álvaro" → full_name: "Álvaro"; "soy María López" → full_name: "María López".
 5. Orden de prioridad para urgencias: symptoms.description → patient.full_name → patient.phone (recógelos rápido, sin hacer demasiadas preguntas).
 6. Una vez recopilados todos los campos obligatorios, establece next_action a la acción de finalización correspondiente (offer_appointment, confirm_details, escalate_human, etc.).
 7. Para completar la reserva de cita (offer_appointment o confirm_details): tu respuesta debe cerrar el flujo. Indica que la solicitud está registrada, que se ha tomado nota de su preferencia y que el equipo confirmará la disponibilidad. Termina con un mensaje tranquilizador — no insinúes que vas a comprobar la disponibilidad ni que les llamarás.
@@ -264,7 +267,9 @@ ${symptomInfo || "  (ninguno todavía)"}
 
 Intención actual: ${state.current_intent ?? "(aún no determinada)"}
 Urgencia actual: ${state.current_urgency}
-Turnos consecutivos con baja confianza: ${state.consecutive_low_confidence}`;
+Turnos consecutivos con baja confianza: ${state.consecutive_low_confidence}
+Solicitud de cita ya registrada: ${state.appointment_request_open ? "SÍ — no vuelvas a ofrecer ni registrar una cita; la solicitud ya existe." : "no"}
+Flujo de reserva completado: ${state.completed ? "SÍ — responde a las preguntas del paciente con normalidad; no inicies un nuevo flujo de reserva." : "no"}`;
 }
 
 // ---------------------------------------------------------------------------
