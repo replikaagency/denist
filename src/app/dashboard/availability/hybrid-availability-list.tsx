@@ -120,7 +120,9 @@ export function HybridAvailabilityList({
       <CardHeader className="flex flex-col gap-3 border-b py-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <CardTitle className="text-sm font-medium text-muted-foreground">
-            {total} {total !== 1 ? 'registros' : 'registro'} cargados · {filtered.length} mostrados
+            {total === 0
+              ? 'No hay pacientes pendientes en este momento.'
+              : `Mostrando ${filtered.length} de ${total} ${total !== 1 ? 'pacientes' : 'paciente'}`}
           </CardTitle>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -162,7 +164,9 @@ export function HybridAvailabilityList({
       <CardContent className="p-0">
         {filtered.length === 0 ? (
           <div className="px-5 py-8 text-center text-sm text-muted-foreground">
-            Ningún registro coincide con los filtros.
+            {total === 0
+              ? 'Aún no hay pacientes con disponibilidad registrada.'
+              : 'No hay pacientes que coincidan con los filtros actuales.'}
           </div>
         ) : (
           <div className="divide-y">

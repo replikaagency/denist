@@ -34,6 +34,18 @@ export async function createHybridBooking(insert: {
   return data as HybridBooking;
 }
 
+export async function getHybridBookingById(id: string): Promise<HybridBooking> {
+  const { data, error } = await db()
+    .from('hybrid_bookings')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (error) throw AppError.database('Failed to fetch hybrid booking', error);
+  if (!data) throw AppError.notFound('HybridBooking', id);
+  return data as HybridBooking;
+}
+
 export async function getActiveHybridBookingForConversation(
   conversationId: string,
 ): Promise<HybridBooking | null> {

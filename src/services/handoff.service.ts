@@ -1,5 +1,6 @@
 import { createHandoffEvent, getOpenHandoffForConversation } from '@/lib/db/handoffs';
-import { updateConversation } from '@/lib/db/conversations';
+import { appendConversationEvent } from '@/lib/db/conversation-events';
+import { getConversationById, updateConversation } from '@/lib/db/conversations';
 import { getContactById } from '@/lib/db/contacts';
 import { sendEscalationEmail } from '@/lib/notifications/escalation-email';
 import type { HandoffEvent, HandoffReason } from '@/types/database';
@@ -47,6 +48,21 @@ export async function createHandoff(input: {
     reason,
     trigger_message_id: input.triggerMessageId,
     notes: input.escalation.reason ?? undefined,
+  });
+
+  const conv = await getConversationById(input.conversationId);
+  appendConversationEvent({
+    conversationId: input.conversationId,
+    contactId: input.contactId,
+    leadId: conv.lead_id ?? null,
+    eventType: 'handoff_created',
+    source: 'chat',
+    metadata: {
+      handoff_event_id: handoff.id,
+      handoff_reason: handoff.reason,
+      escalation_type: input.escalation.type ?? null,
+      trigger_message_id: input.triggerMessageId ?? null,
+    },
   });
 
   await updateConversation(input.conversationId, {

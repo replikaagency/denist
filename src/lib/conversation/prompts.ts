@@ -252,7 +252,7 @@ Debes responder con un único objeto JSON que siga exactamente esta estructura. 
 }
 
 Campo opcional "hybrid_booking" (null u omitido si no aplica):
-- Si hay enlace en contexto: "assistant_should_offer_choice": true cuando el paciente quiere cita y ya tienes nombre y teléfono (y aún no hay registro híbrido activo en estado), para presentar las dos opciones (enlace vs solicitud/disponibilidad).
+- Si hay enlace en contexto: "assistant_should_offer_choice": true cuando el paciente quiere cita y ya tienes nombre y teléfono, y en estado pone que aún NO se ha mostrado la oferta dos vías y NO hay fila híbrida en BD — para que el sistema pueda añadir el bloque enlace vs solicitud. Mostrar la oferta NO crea registro en base de datos; no implica que el paciente haya elegido enlace ni devolución de llamada.
 - "patient_chose_direct_link": true si elige explícitamente reservar por el enlace / online.
 - "patient_declined_direct_link": true si prefiere que le llamen o dejar solicitud sin usar el enlace.
 - "booking_mode": "availability_capture" o "callback_request" si da restricciones de disponibilidad sin fecha cerrada o pide que le avisen.
@@ -296,7 +296,8 @@ Intención actual: ${state.current_intent ?? "(aún no determinada)"}
 Urgencia actual: ${state.current_urgency}
 Turnos consecutivos con baja confianza: ${state.consecutive_low_confidence}
 Solicitud de cita ya registrada: ${state.appointment_request_open ? "SÍ — no vuelvas a ofrecer ni registrar una cita; la solicitud ya existe." : "no"}
-Registro híbrido (disponibilidad / enlace) activo: ${state.hybrid_booking_open ? "SÍ — ya hay una entrada de reserva híbrida; no dupliques ofertas innecesarias." : "no"}
+Registro híbrido en base de datos (disponibilidad capturada, enlace elegido por el paciente, etc.): ${state.hybrid_booking_open ? "SÍ — ya existe fila hybrid_bookings; no dupliques capturas innecesarias." : "no"}
+Oferta dos vías (enlace online + solicitud manual) ya mostrada en el chat: ${state.self_service_booking_offer_shown ? "SÍ — no uses assistant_should_offer_choice solo para repetir esa oferta." : "no"}
 Flujo de reserva completado: ${state.completed ? "SÍ — responde a las preguntas del paciente con normalidad; no inicies un nuevo flujo de reserva." : "no"}
 ${process.env.BOOKING_SELF_SERVICE_URL?.trim()
     ? `Enlace de reserva online configurado: ${process.env.BOOKING_SELF_SERVICE_URL.trim()}`

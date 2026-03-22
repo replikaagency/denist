@@ -5,10 +5,12 @@ import {
   getOpenAppointmentRequestsForContact,
   rescheduleAppointmentRequestRPC,
 } from '@/lib/db/appointments';
+import { appendConversationEvent } from '@/lib/db/conversation-events';
 import { advanceLeadStatus, getLeadById } from '@/lib/db/leads';
 import { updateConversation } from '@/lib/db/conversations';
 import type { AppointmentRequest, AppointmentType } from '@/types/database';
 import type { AppointmentDetails } from '@/lib/conversation/schema';
+import { log } from '@/lib/logger';
 
 // ---------------------------------------------------------------------------
 // Normalizers — sanitize LLM free-text before it reaches the DB
@@ -544,7 +546,7 @@ export async function createRequest(input: {
     const patch = buildEnrichPatch(existing, resolved, input.correctionFields);
     if (patch) {
       const updated = await enrichAppointmentRequest(existing.id, patch);
-      console.log('[AppointmentService] appointment_updated', {
+      log('info', 'appointment.request_updated', {
         appointment_id: existing.id,
         conversationId: input.conversationId,
         patch_fields: Object.keys(patch),
@@ -563,7 +565,19 @@ export async function createRequest(input: {
       lead_id: input.leadId,
       ...dbFields,
     });
-    console.log('[AppointmentService] appointment_created', {
+    appendConversationEvent({
+      conversationId: input.conversationId,
+      contactId: input.contactId,
+      leadId: input.leadId,
+      eventType: 'appointment_request_created',
+      source: 'chat',
+      metadata: {
+        appointment_request_id: request.id,
+        appointment_status: request.status,
+        appointment_type: request.appointment_type,
+      },
+    });
+    log('info', 'appointment.request_created', {
       appointment_id: request.id,
       conversationId: input.conversationId,
       contactId: input.contactId,
@@ -578,7 +592,7 @@ export async function createRequest(input: {
       const patch = buildEnrichPatch(raceWinner, resolved, input.correctionFields);
       if (patch) {
         const updated = await enrichAppointmentRequest(raceWinner.id, patch);
-        console.log('[AppointmentService] appointment_updated', {
+        log('info', 'appointment.request_updated', {
           appointment_id: raceWinner.id,
           conversationId: input.conversationId,
           patch_fields: Object.keys(patch),
@@ -587,10 +601,10 @@ export async function createRequest(input: {
       }
       return raceWinner;
     }
-    console.error('[AppointmentService] createRequest race recovery failed', {
+    log('error', 'appointment.create_request_race_recovery_failed', {
       conversationId: input.conversationId,
       contactId: input.contactId,
-      error: err,
+      error: err instanceof Error ? err.message : err,
     });
     throw err;
   }
@@ -703,7 +717,21 @@ export async function executeReschedule(input: {
     );
   }
 
-  console.log('[AppointmentService] appointment_rescheduled', {
+  appendConversationEvent({
+    conversationId: input.conversationId,
+    contactId: input.contactId,
+    leadId: input.leadId,
+    eventType: 'appointment_request_created',
+    source: 'chat',
+    metadata: {
+      appointment_request_id: newRow.id,
+      prior_appointment_request_id: input.oldRequestId,
+      path: 'reschedule',
+      appointment_status: newRow.status,
+    },
+  });
+
+  log('info', 'appointment.request_rescheduled', {
     old_id: input.oldRequestId,
     new_id: newRow.id,
     conversationId: input.conversationId,

@@ -1,0 +1,73 @@
+-- =============================================================================
+-- Pilot analytics — conversation_events (append-only lifecycle log)
+-- Run against your Supabase SQL editor or psql. Adjust schema if not "public".
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- A) Events in the last 7 days, grouped by event_type
+-- -----------------------------------------------------------------------------
+-- SELECT event_type,
+--        count(*) AS event_count
+-- FROM public.conversation_events
+-- WHERE created_at >= now() - interval '7 days'
+-- GROUP BY event_type
+-- ORDER BY event_count DESC;
+
+-- -----------------------------------------------------------------------------
+-- B) Conversations that had booking_link_shown but never appointment_request_created
+--    (funnel drop-off proxy — same conversation_id in both event types)
+-- -----------------------------------------------------------------------------
+-- WITH showed AS (
+--   SELECT DISTINCT conversation_id
+--   FROM public.conversation_events
+--   WHERE event_type = 'booking_link_shown'
+-- ),
+-- created AS (
+--   SELECT DISTINCT conversation_id
+--   FROM public.conversation_events
+--   WHERE event_type = 'appointment_request_created'
+-- )
+-- SELECT s.conversation_id
+-- FROM showed s
+-- LEFT JOIN created c ON c.conversation_id = s.conversation_id
+-- WHERE c.conversation_id IS NULL;
+
+-- -----------------------------------------------------------------------------
+-- C) Time from hybrid_booking_created to hybrid_status_changed (same hybrid row)
+--    Uses metadata.hybrid_booking_id on both events; staff status updates only.
+-- -----------------------------------------------------------------------------
+-- WITH created AS (
+--   SELECT
+--     (metadata->>'hybrid_booking_id')::uuid AS hybrid_booking_id,
+--     conversation_id,
+--     created_at AS created_at
+--   FROM public.conversation_events
+--   WHERE event_type = 'hybrid_booking_created'
+--     AND metadata ? 'hybrid_booking_id'
+-- ),
+-- changed AS (
+--   SELECT
+--     (metadata->>'hybrid_booking_id')::uuid AS hybrid_booking_id,
+--     created_at AS changed_at,
+--     metadata->>'previous_status' AS previous_status,
+--     metadata->>'new_status' AS new_status
+--   FROM public.conversation_events
+--   WHERE event_type = 'hybrid_status_changed'
+--     AND metadata ? 'hybrid_booking_id'
+-- )
+-- SELECT
+--   c.conversation_id,
+--   c.hybrid_booking_id,
+--   c.created_at,
+--   ch.changed_at,
+--   ch.changed_at - c.created_at AS latency,
+--   ch.previous_status,
+--   ch.new_status
+-- FROM created c
+-- JOIN LATERAL (
+--   SELECT *
+--   FROM changed ch
+--   WHERE ch.hybrid_booking_id = c.hybrid_booking_id
+--   ORDER BY ch.changed_at ASC
+--   LIMIT 1
+-- ) ch ON true;

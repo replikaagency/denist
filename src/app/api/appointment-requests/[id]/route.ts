@@ -7,6 +7,7 @@ import { type NextRequest } from 'next/server';
 import { successResponse, errorResponse, handleRouteError } from '@/lib/response';
 import { requireStaffAuth } from '@/lib/auth';
 import { AppointmentRequestUpdateSchema } from '@/lib/schemas/appointment';
+import { appendConversationEvent } from '@/lib/db/conversation-events';
 import { getAppointmentRequestById, updateAppointmentRequest } from '@/lib/db/appointments';
 import { advanceLeadStatus } from '@/lib/db/leads';
 import { getLeadByContactId } from '@/lib/db/leads';
@@ -52,7 +53,27 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       }
     }
 
+    const before = await getAppointmentRequestById(id);
     const appt = await updateAppointmentRequest(id, parsed.data);
+
+    if (
+      parsed.data.status !== undefined &&
+      before.status !== appt.status &&
+      appt.conversation_id
+    ) {
+      appendConversationEvent({
+        conversationId: appt.conversation_id,
+        contactId: appt.contact_id,
+        leadId: appt.lead_id,
+        eventType: 'appointment_status_changed',
+        source: 'staff_api',
+        metadata: {
+          appointment_request_id: appt.id,
+          previous_status: before.status,
+          new_status: appt.status,
+        },
+      });
+    }
 
     // Sync conversation state flag so the engine's flow controller reflects
     // the new appointment status on the next patient turn.

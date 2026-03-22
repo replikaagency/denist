@@ -63,7 +63,7 @@ describe('hybridOfferTwoWaysBlockEs', () => {
     const b = hybridOfferTwoWaysBlockEs('https://x.test/book');
     expect(b).toContain('👉 https://x.test/book');
     expect(b).toContain('dos formas');
-    expect(b).toContain('equipo te contacte');
+    expect(b).toContain('equipo te contacta');
   });
 });
 

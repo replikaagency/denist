@@ -1,3 +1,6 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 
 export type Message = {
@@ -5,10 +8,16 @@ export type Message = {
   role: "user" | "assistant" | "staff" | "system";
   content: string;
   timestamp: string;
+  /** Fade/slide-in for newly appended messages (skip for history on load). */
+  animateEnter?: boolean;
+  /** Light progressive reveal for assistant text (UI-only). */
+  streamReveal?: boolean;
 };
 
 type ChatMessageProps = {
   message: Message;
+  /** Skip motion/streaming when user prefers reduced motion. */
+  reduceMotion?: boolean;
 };
 
 const ROLE_CONFIG = {
@@ -41,13 +50,60 @@ const ROLE_CONFIG = {
     avatarLabel: "",
     bubbleClass: "",
   },
-} satisfies Record<Message["role"], { align: string; itemsAlign: string; avatarClass: string; avatarLabel: string; bubbleClass: string }>;
+} satisfies Record<
+  Message["role"],
+  { align: string; itemsAlign: string; avatarClass: string; avatarLabel: string; bubbleClass: string }
+>;
 
-export function ChatMessage({ message }: ChatMessageProps) {
+const enterMotion = "animate-in fade-in slide-in-from-bottom-1 duration-200 fill-mode-both";
+
+function AssistantStreamText({
+  text,
+  enabled,
+  instant,
+}: {
+  text: string;
+  enabled: boolean;
+  instant?: boolean;
+}) {
+  const [shown, setShown] = useState(
+    enabled && !instant ? 0 : text.length,
+  );
+
+  useEffect(() => {
+    if (!enabled || instant) {
+      setShown(text.length);
+      return;
+    }
+    setShown(0);
+    const step = 4;
+    const tickMs = 16;
+    let i = 0;
+    const id = window.setInterval(() => {
+      i += step;
+      if (i >= text.length) {
+        setShown(text.length);
+        window.clearInterval(id);
+      } else {
+        setShown(i);
+      }
+    }, tickMs);
+    return () => window.clearInterval(id);
+  }, [text, enabled, instant]);
+
+  return <>{text.slice(0, shown)}</>;
+}
+
+export function ChatMessage({ message, reduceMotion }: ChatMessageProps) {
   // System messages render as a centered, divider-style notification
   if (message.role === "system") {
     return (
-      <div className="flex items-center gap-3 py-1">
+      <div
+        className={cn(
+          "flex items-center gap-3 py-1",
+          message.animateEnter && !reduceMotion && enterMotion,
+        )}
+      >
         <div className="h-px flex-1 bg-border/60" />
         <span className="shrink-0 text-[11px] italic text-muted-foreground">
           {message.content}
@@ -60,7 +116,13 @@ export function ChatMessage({ message }: ChatMessageProps) {
   const config = ROLE_CONFIG[message.role];
 
   return (
-    <div className={cn("flex w-full gap-3", config.align)}>
+    <div
+      className={cn(
+        "flex w-full gap-3",
+        config.align,
+        message.animateEnter && !reduceMotion && enterMotion,
+      )}
+    >
       <div
         className={cn(
           "flex size-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
@@ -72,8 +134,21 @@ export function ChatMessage({ message }: ChatMessageProps) {
       </div>
 
       <div className={cn("flex max-w-[75%] flex-col gap-1", config.itemsAlign)}>
-        <div className={cn("rounded-2xl px-4 py-2.5 text-sm leading-relaxed", config.bubbleClass)}>
-          {message.content}
+        <div
+          className={cn(
+            "rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
+            config.bubbleClass,
+          )}
+        >
+          {message.role === "assistant" && message.streamReveal ? (
+            <AssistantStreamText
+              text={message.content}
+              enabled
+              instant={reduceMotion}
+            />
+          ) : (
+            message.content
+          )}
         </div>
         <span className="px-1 text-[11px] text-muted-foreground">{message.timestamp}</span>
       </div>

@@ -177,6 +177,17 @@ export interface HybridBooking {
   updated_at: string;
 }
 
+export interface ConversationEvent {
+  id: string;
+  conversation_id: string;
+  contact_id: string;
+  lead_id: string | null;
+  event_type: string;
+  source: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
 // ---------------------------------------------------------------------------
 // Joined / view types used by route handlers
 // ---------------------------------------------------------------------------
@@ -363,6 +374,21 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
         };
+        Relationships: GenericRelationship[];
+      };
+      conversation_events: {
+        Row: ConversationEvent;
+        Insert: {
+          id?: string;
+          conversation_id: string;
+          contact_id: string;
+          lead_id?: string | null;
+          event_type: string;
+          source?: string | null;
+          metadata?: Record<string, unknown>;
+          created_at?: string;
+        };
+        Update: never;
         Relationships: GenericRelationship[];
       };
       hybrid_bookings: {

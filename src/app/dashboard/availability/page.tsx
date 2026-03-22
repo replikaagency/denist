@@ -16,7 +16,7 @@ export default async function AvailabilityLeadsPage() {
         <h1 className="text-xl font-semibold tracking-tight">Disponibilidad</h1>
         <p className="text-sm text-muted-foreground">
           Pacientes que han indicado disponibilidad o prefieren devolución de llamada en lugar de reservar
-          online. Use esta lista para cubrir huecos y hacer seguimiento por teléfono.
+          online. Use esta lista para llamar a pacientes cuando se libere un hueco en la agenda.
         </p>
       </div>
 

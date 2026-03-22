@@ -5,6 +5,7 @@ import {
   getActiveHybridBookingForConversation,
   updateHybridBooking,
 } from '@/lib/db/hybrid-bookings';
+import { appendConversationEvent } from '@/lib/db/conversation-events';
 import type { HybridBookingMode } from '@/types/database';
 
 /** @deprecated Prefer formatAvailabilityCapturedEs + merge helpers. */
@@ -20,14 +21,14 @@ export interface HybridAvailabilityPayload {
   booking_mode: HybridBookingMode;
 }
 
-/** Offer: direct link vs callback / availability registration (exact product copy). */
+/** Offer: direct link vs manual request (exact product copy). */
 export function hybridOfferTwoWaysBlockEs(url: string): string {
   const u = url.trim();
   return (
     'Puedes hacerlo de dos formas:\n\n' +
-    '1. Reservar directamente aquí y elegir la hora disponible:\n' +
+    '1. Reservar directamente aquí:\n' +
     `👉 ${u}\n\n` +
-    '2. O, si lo prefieres, puedo dejar registrada tu solicitud y tu disponibilidad para que el equipo te contacte.'
+    '2. O si prefieres, puedo registrar tu solicitud y el equipo te contacta.'
   );
 }
 
@@ -153,12 +154,24 @@ export async function processHybridBookingTurn(
         },
       });
     } else {
-      await createHybridBooking({
+      const created = await createHybridBooking({
         contact_id: ctx.contactId,
         conversation_id: ctx.conversationId,
         lead_id: ctx.leadId,
         ...payload,
         metadata: { source: 'chat_availability_capture' },
+      });
+      appendConversationEvent({
+        conversationId: ctx.conversationId,
+        contactId: ctx.contactId,
+        leadId: ctx.leadId,
+        eventType: 'hybrid_booking_created',
+        source: 'chat',
+        metadata: {
+          hybrid_booking_id: created.id,
+          booking_mode: created.booking_mode,
+          path: 'chat_availability_capture',
+        },
       });
     }
     deferredStandardFlow = true;
@@ -176,7 +189,7 @@ export async function processHybridBookingTurn(
         },
       });
     } else {
-      await createHybridBooking({
+      const created = await createHybridBooking({
         contact_id: ctx.contactId,
         conversation_id: ctx.conversationId,
         lead_id: ctx.leadId,
@@ -185,19 +198,20 @@ export async function processHybridBookingTurn(
         service_interest: ctx.state.appointment.service_type,
         metadata: { source: 'chat_direct_link', link_sent_at: new Date().toISOString(), booking_url: url },
       });
+      appendConversationEvent({
+        conversationId: ctx.conversationId,
+        contactId: ctx.contactId,
+        leadId: ctx.leadId,
+        eventType: 'hybrid_booking_created',
+        source: 'chat',
+        metadata: {
+          hybrid_booking_id: created.id,
+          booking_mode: created.booking_mode,
+          path: 'chat_direct_link',
+        },
+      });
     }
     deferredStandardFlow = true;
-  } else if (url && hb?.assistant_should_offer_choice === true && !ctx.state.hybrid_booking_open) {
-    await createHybridBooking({
-      contact_id: ctx.contactId,
-      conversation_id: ctx.conversationId,
-      lead_id: ctx.leadId,
-      booking_mode: 'direct_link',
-      wants_callback: true,
-      service_interest: ctx.state.appointment.service_type,
-      availability_notes: 'Paciente recibió oferta: enlace directo o devolución de llamada.',
-      metadata: { source: 'chat_offer_choice', offered_at: new Date().toISOString(), booking_url: url },
-    });
   }
 
   return { deferredStandardFlow, capturePayload };

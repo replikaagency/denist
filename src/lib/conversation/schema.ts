@@ -254,8 +254,12 @@ export const ConversationStateSchema = z.object({
   awaiting_confirmation: z.boolean().default(false),
   pending_appointment: AppointmentSchema.nullable().default(null),
   confirmation_attempts: z.number().default(0),
+  /** ISO 8601 — set when awaiting_confirmation becomes true; used for 30min expiry (not last_message_at). */
+  confirmation_prompt_at: z.string().nullable().default(null),
   // True when an active hybrid_bookings row exists for this conversation (synced from DB each turn).
   hybrid_booking_open: z.boolean().default(false),
+  // True after the two-way self-service vs manual booking offer was appended to a reply (no DB row).
+  self_service_booking_offer_shown: z.boolean().default(false),
   // Audit and operational metadata. Uses .loose() so unknown keys present in
   // existing DB records are preserved on parse/re-save without a migration.
   // correction_log is expected to remain small (single-digit entries per
@@ -327,7 +331,9 @@ export function createInitialState(conversationId: string): ConversationState {
     awaiting_confirmation: false,
     pending_appointment: null,
     confirmation_attempts: 0,
+    confirmation_prompt_at: null,
     hybrid_booking_open: false,
+    self_service_booking_offer_shown: false,
     metadata: { correction_log: [], correction_count: 0, last_correction_at: null, too_many_corrections: false },
   };
 }

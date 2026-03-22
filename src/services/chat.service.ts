@@ -34,6 +34,7 @@ import {
   summarizeRequest,
 } from './appointment.service';
 import { createHandoff } from './handoff.service';
+import { appendConversationEvent } from '@/lib/db/conversation-events';
 import { getActiveHybridBookingForConversation } from '@/lib/db/hybrid-bookings';
 import {
   appendHybridAckToReply,
@@ -44,6 +45,9 @@ import {
 } from './hybrid-booking.service';
 
 import type { Contact, Conversation, Lead, Message } from '@/types/database';
+
+/** Age of confirmation prompt before we reset and return the patient to the LLM flow. */
+const CONFIRMATION_PROMPT_TTL_MS = 30 * 60 * 1000;
 
 /**
  * Regex-based fallback name extractor for Spanish input.
@@ -161,16 +165,36 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   // and execute the corresponding branch.  The LLM is intentionally bypassed
   // so a "sí" cannot be misclassified or rewritten by any fallback rule.
   if (state.awaiting_confirmation && state.pending_appointment) {
-    // Confirmation expiry intercept
-    const lastMsgTime = conversation.last_message_at ? new Date(conversation.last_message_at).getTime() : 0;
-    if (lastMsgTime > 0 && Date.now() - lastMsgTime > 30 * 60 * 1000) {
-      // Epired. Reset state and let it fall through to the LLM to process the patient's new message normally.
+    // Defensive / legacy: invariant is awaiting_confirmation ⇒ confirmation_prompt_at set.
+    // Pre-hardening rows may lack the timestamp; backfill once per turn so expiry can apply.
+    if (!state.confirmation_prompt_at) {
+      state.confirmation_prompt_at = new Date().toISOString();
+    }
+
+    // Confirmation expiry: use the prompt timestamp (set when we first showed
+    // the summary), NOT last_message_at — that updates on every patient send
+    // and would make this check never fire.
+    let confirmationExpired = false;
+    if (state.confirmation_prompt_at) {
+      const promptMs = new Date(state.confirmation_prompt_at).getTime();
+      if (!Number.isNaN(promptMs) && Date.now() - promptMs > CONFIRMATION_PROMPT_TTL_MS) {
+        confirmationExpired = true;
+      }
+    }
+    // Legacy rows: awaiting_confirmation without confirmation_prompt_at — skip expiry
+    // (same indefinite wait as pre-fix; new prompts always set the timestamp).
+
+    if (confirmationExpired) {
+      // Expired. Reset state and let it fall through to the LLM to process the patient's new message normally.
       state.awaiting_confirmation = false;
       state.pending_appointment = null;
       state.confirmation_attempts = 0;
+      state.confirmation_prompt_at = null;
       state.reschedule_phase = 'idle';
       state.reschedule_target_id = null;
       state.reschedule_target_summary = null;
+      // Persist immediately so early returns (e.g. LLM parse failure) do not leave DB stuck in awaiting_confirmation.
+      conversation = await saveState(conversation_id, state);
     } else {
       const pendingAppointment = state.pending_appointment; // non-null inside this block
       let confirmation = classifyConfirmation(content);
@@ -197,10 +221,9 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
 
       if (isReschedule) {
         try {
-          console.log('[EVENT]', {
-            type: 'appointment_reschedule',
-            contactId: effectiveContactId,
-            conversationId: conversation_id,
+          log('info', 'event.appointment_reschedule', {
+            conversation_id,
+            contact_id: effectiveContactId,
           });
           await executeReschedule({
             oldRequestId: state.reschedule_target_id!,
@@ -221,10 +244,10 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
             old_request_id: state.reschedule_target_id,
             error: err instanceof Error ? err.message : err,
           });
-          console.log('[EVENT]', {
-            type: 'appointment_created',
-            contactId: effectiveContactId,
-            conversationId: conversation_id,
+          log('info', 'event.appointment_request_created', {
+            conversation_id,
+            contact_id: effectiveContactId,
+            path: 'confirmation_reschedule_fallback',
           });
           await createRequest({
             contactId: effectiveContactId,
@@ -237,10 +260,10 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
             'Te contactaremos en horario de atención para confirmar. ¿Hay algo más en lo que pueda ayudarte?';
         }
       } else {
-        console.log('[EVENT]', {
-          type: 'appointment_created',
-          contactId: effectiveContactId,
-          conversationId: conversation_id,
+        log('info', 'event.appointment_request_created', {
+          conversation_id,
+          contact_id: effectiveContactId,
+          path: 'confirmation_intercept',
         });
         await createRequest({
           contactId: effectiveContactId,
@@ -256,6 +279,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       state.awaiting_confirmation = false;
       state.pending_appointment = null;
       state.confirmation_attempts = 0;
+      state.confirmation_prompt_at = null;
       state.appointment_request_open = true;
       state.completed = true;
       state.reschedule_phase = 'idle';
@@ -276,6 +300,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       state.awaiting_confirmation = false;
       state.pending_appointment = null;
       state.confirmation_attempts = 0;
+      state.confirmation_prompt_at = null;
       state.reschedule_phase = 'idle';
       state.reschedule_target_id = null;
       state.reschedule_target_summary = null;
@@ -299,6 +324,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       state.awaiting_confirmation = false;
       state.pending_appointment = null;
       state.confirmation_attempts = 0;
+      state.confirmation_prompt_at = null;
       state.reschedule_phase = 'idle';
       state.reschedule_target_id = null;
       state.reschedule_target_summary = null;
@@ -310,10 +336,10 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
         escalation: { shouldEscalate: true, reason: state.escalation_reason, type: 'human' },
         triggerMessageId: patientMessage.id,
       });
-      console.log('[EVENT]', {
-        type: 'handoff_created',
-        contactId: effectiveContactId,
-        conversationId: conversation_id,
+      log('info', 'event.handoff_created', {
+        conversation_id,
+        contact_id: effectiveContactId,
+        path: 'confirmation_escalation',
       });
       const escalateReply =
         'No me ha quedado claro si quieres confirmar tu solicitud. Voy a conectarte con un miembro de nuestro equipo para que puedan ayudarte directamente.';
@@ -548,12 +574,11 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
         const fromContactId = effectiveContactId;
         await updateConversation(conversation_id, { contact_id: enriched.id });
         conversation = await getConversationById(conversation_id);
-        console.log('[EVENT]', {
-          type: 'merge_contact',
-          conversationId: conversation_id,
-          fromContactId,
-          toContactId: enriched.id,
-          sessionTokenTransferred: true,
+        log('info', 'event.merge_contact', {
+          conversation_id,
+          from_contact_id: fromContactId,
+          to_contact_id: enriched.id,
+          session_token_transferred: true,
         });
       }
       updatedContact = enriched;
@@ -657,6 +682,24 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     turnResult.rawOutput.correction_fields.length > 0 &&
     hasOpenRequest === true;
 
+  let bookingLinkShownEventEmittedThisTurn = false;
+  const tryEmitBookingLinkShown = (path: string) => {
+    if (bookingLinkShownEventEmittedThisTurn) return;
+    bookingLinkShownEventEmittedThisTurn = true;
+    appendConversationEvent({
+      conversationId: conversation_id,
+      contactId: effectiveContactId,
+      leadId: lead?.id ?? null,
+      eventType: 'booking_link_shown',
+      source: 'chat',
+      metadata: {
+        path,
+        patient_message_id: patientMessage.id,
+        turn_count: turnResult.state.turn_count,
+      },
+    });
+  };
+
   // Hybrid booking (direct link + structured availability) — new appointment_request only.
   let hybridDeferredStandardFlow = false;
   const bookingSelfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL?.trim() ?? '';
@@ -682,6 +725,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       turnResult.state.offer_appointment_pending = false;
       turnResult.state.awaiting_confirmation = false;
       turnResult.state.pending_appointment = null;
+      turnResult.state.confirmation_prompt_at = null;
       turnResult.state.completed = false;
       const hbOut = turnResult.rawOutput.hybrid_booking;
       const choseLink =
@@ -695,8 +739,22 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       } else {
         turnResult.reply = appendHybridAckToReply(turnResult.reply);
       }
-    } else if (bookingSelfServiceUrl && turnResult.rawOutput.hybrid_booking?.assistant_should_offer_choice) {
+    } else if (
+      bookingSelfServiceUrl &&
+      turnResult.rawOutput.hybrid_booking?.assistant_should_offer_choice &&
+      !turnResult.state.hybrid_booking_open &&
+      !turnResult.state.self_service_booking_offer_shown
+    ) {
+      const beforeHybridOffer = turnResult.reply.trim();
+      const url = bookingSelfServiceUrl.trim();
       turnResult.reply = mergeHybridOfferTwoWaysReply(turnResult.reply, bookingSelfServiceUrl);
+      if (
+        turnResult.reply.trim() !== beforeHybridOffer ||
+        (url && turnResult.reply.includes(url) && turnResult.reply.toLowerCase().includes('dos formas'))
+      ) {
+        turnResult.state.self_service_booking_offer_shown = true;
+        tryEmitBookingLinkShown('llm_assistant_should_offer_choice');
+      }
     }
     turnResult.state.hybrid_booking_open = !!(await getActiveHybridBookingForConversation(conversation_id));
   }
@@ -720,6 +778,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     turnResult.state.awaiting_confirmation = true;
     turnResult.state.pending_appointment = { ...turnResult.state.appointment };
     turnResult.state.confirmation_attempts = 0;
+    turnResult.state.confirmation_prompt_at = new Date().toISOString();
     turnResult.state.completed = false;
     turnResult.state.offer_appointment_pending = false;
     turnResult.reply = buildRescheduleConfirmationSummary(
@@ -736,10 +795,9 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       // Existing request — enrich or apply correction directly.
       // Confirmation already happened on the turn that created the row.
       // lead is guaranteed non-null: isIdentified gate above ensures it was set.
-      console.log('[EVENT]', {
-        type: 'appointment_enriched',
-        contactId: effectiveContactId,
-        conversationId: conversation_id,
+      log('info', 'event.appointment_enriched', {
+        conversation_id,
+        contact_id: effectiveContactId,
       });
       await createRequest({
         contactId: effectiveContactId,
@@ -761,6 +819,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
         turnResult.state.awaiting_confirmation = true;
         turnResult.state.pending_appointment = { ...turnResult.state.appointment };
         turnResult.state.confirmation_attempts = 0;
+        turnResult.state.confirmation_prompt_at = new Date().toISOString();
         turnResult.state.completed = false;        // don't lock flow until confirmed
         turnResult.state.offer_appointment_pending = false;
         turnResult.reply = buildConfirmationSummary(turnResult.state.patient, turnResult.state.appointment);
@@ -802,12 +861,11 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
             const fromContactId = effectiveContactId;
             await updateConversation(conversation_id, { contact_id: flushEnriched.id });
             conversation = await getConversationById(conversation_id);
-            console.log('[EVENT]', {
-              type: 'merge_contact',
-              conversationId: conversation_id,
-              fromContactId,
-              toContactId: flushEnriched.id,
-              sessionTokenTransferred: true,
+            log('info', 'event.merge_contact', {
+              conversation_id,
+              from_contact_id: fromContactId,
+              to_contact_id: flushEnriched.id,
+              session_token_transferred: true,
             });
           }
           updatedContact = flushEnriched;
@@ -832,10 +890,10 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       escalation: turnResult.escalation,
       triggerMessageId: patientMessage.id,
     });
-    console.log('[EVENT]', {
-      type: 'handoff_created',
-      contactId: effectiveContactId,
-      conversationId: conversation_id,
+    log('info', 'event.handoff_created', {
+      conversation_id,
+      contact_id: effectiveContactId,
+      path: 'chat_escalation',
     });
   }
 
@@ -843,6 +901,32 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   // and a concurrent `end_conversation` action must not clobber waiting_human.
   if (!turnResult.escalation.shouldEscalate && turnResult.rawOutput.next_action === 'end_conversation') {
     await transitionStatus(conversation_id, 'resolved');
+  }
+
+  // When BOOKING_SELF_SERVICE_URL is set and the patient is in a new booking flow, ensure the
+  // two-way offer appears once (state flag only — no hybrid_bookings row until the patient picks a path).
+  if (
+    bookingSelfServiceUrl &&
+    !turnResult.escalation.shouldEscalate &&
+    isIdentified &&
+    lead &&
+    !hasOpenRequest &&
+    turnResult.state.current_intent === 'appointment_request' &&
+    turnResult.state.reschedule_phase === 'idle' &&
+    !hybridDeferredStandardFlow &&
+    !turnResult.state.hybrid_booking_open &&
+    !turnResult.state.self_service_booking_offer_shown
+  ) {
+    const replyBeforeOffer = turnResult.reply.trim();
+    const url = bookingSelfServiceUrl.trim();
+    turnResult.reply = mergeHybridOfferTwoWaysReply(turnResult.reply, bookingSelfServiceUrl);
+    if (
+      turnResult.reply.trim() !== replyBeforeOffer ||
+      (url && turnResult.reply.includes(url) && turnResult.reply.toLowerCase().includes('dos formas'))
+    ) {
+      turnResult.state.self_service_booking_offer_shown = true;
+      tryEmitBookingLinkShown('deterministic_offer_tail');
+    }
   }
 
   // 13. Persist AI message
