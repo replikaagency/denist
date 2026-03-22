@@ -5,6 +5,7 @@ import {
   createContact,
   updateContact,
   findContactByEmailOrPhone,
+  transferSessionTokenToCanonical,
 } from '@/lib/db/contacts';
 import { normalizePhone } from '@/lib/phone';
 import type { Contact } from '@/types/database';
@@ -84,13 +85,15 @@ export async function enrichContact(
   );
   if (duplicate && duplicate.id !== contactId) {
     // Returning patient: a canonical contact already owns this phone/email.
-    // Merge only fields that are null on the canonical record — never overwrite.
+    // Merge only fields that are null on the canonical record — never overwrite
+    // first/last name if the canonical already has them (see docs/STAFF_CONTACT_MERGE.md).
     const mergeFields: Record<string, unknown> = {};
     if (!duplicate.first_name  && patch.first_name)  mergeFields.first_name  = patch.first_name;
     if (!duplicate.last_name   && patch.last_name)   mergeFields.last_name   = patch.last_name;
     if (!duplicate.insurance_provider && patch.insurance_provider)
       mergeFields.insurance_provider = patch.insurance_provider;
     if (Object.keys(mergeFields).length > 0) await updateContact(duplicate.id, mergeFields);
+    await transferSessionTokenToCanonical(contactId, duplicate.id);
     return duplicate; // caller re-links the conversation to this canonical contact
   }
 

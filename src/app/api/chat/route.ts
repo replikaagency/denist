@@ -15,7 +15,11 @@ export async function POST(request: NextRequest) {
 
     // Rate limit by IP (broad) and by session token (per-user)
     const ip = getClientIp(request);
-    const ipLimit = checkRateLimit(`chat-ip:${ip}`, LIMITS.MAX_MESSAGES_PER_MINUTE * 5, 60_000);
+    const ipLimit = checkRateLimit(
+      `chat-ip:${ip}`,
+      LIMITS.MAX_CHAT_MESSAGES_PER_IP_PER_MINUTE,
+      60_000,
+    );
     if (!ipLimit.allowed) {
       return errorResponse('RATE_LIMITED', 'Demasiadas solicitudes desde esta dirección. Por favor, espera un momento.', 429);
     }

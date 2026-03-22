@@ -4,9 +4,10 @@ import { z } from 'zod/v4';
 import { successResponse, handleRouteError, errorResponse } from '@/lib/response';
 import { findContactBySessionToken } from '@/lib/db/contacts';
 import { checkRateLimit, getClientIp } from '@/lib/rate-limit';
+import { SessionTokenSchema } from '@/lib/schemas/session';
 
 const RealtimeTokenSchema = z.object({
-  session_token: z.string().min(1).max(200),
+  session_token: SessionTokenSchema,
 });
 
 const TOKEN_TTL_SEC = 3600; // 1 hour

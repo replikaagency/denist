@@ -14,6 +14,15 @@
  */
 
 import { CONFIDENCE, type Intent, type Urgency } from "./taxonomy";
+
+/** Intents where rewriting a model "end_conversation" could mask real closure/handoff. */
+const NO_END_CONVERSATION_OVERRIDE_INTENTS = new Set<Intent>([
+  "complaint",
+  "human_handoff_request",
+  "emergency_report",
+  "symptom_report",
+  "post_treatment_concern",
+]);
 import {
   LLMTurnOutputSchema,
   type LLMTurnOutput,
@@ -24,6 +33,8 @@ import {
   type CorrectionLogField,
 } from "./schema";
 import { getMissingFields, getNextFieldPrompt } from "./fields";
+import { LIMITS } from "@/config/constants";
+import { DECLINE_OFFER_FOLLOWUP_REPLY_ES, isPlainDecline } from "./confirmation";
 
 // ---------------------------------------------------------------------------
 // ESCALATION RULES
@@ -45,6 +56,7 @@ export interface EscalationDecision {
 export function checkEscalation(
   output: LLMTurnOutput,
   state: ConversationState,
+  patientUtterance?: string,
 ): EscalationDecision {
   const NO_ESCALATION: EscalationDecision = { shouldEscalate: false, reason: null, type: null };
 
@@ -109,20 +121,34 @@ export function checkEscalation(
   }
 
   // Rule 5: Conversation has exceeded reasonable turn count without resolution
-  if (state.turn_count >= 20 && !state.completed) {
+  if (state.turn_count >= LIMITS.MAX_TURNS_BEFORE_ESCALATION && !state.completed) {
     return {
       shouldEscalate: true,
-      reason: "Conversation exceeded 20 turns without resolution — connecting to staff.",
+      reason: `Conversation exceeded ${LIMITS.MAX_TURNS_BEFORE_ESCALATION} turns without resolution — connecting to staff.`,
       type: "human",
     };
   }
 
-  // Rule 6: Model itself requested escalation
+  // Rule 6: Model itself requested escalation — except normal declines of an offer,
+  // which must not hand off (LLM often mis-fires escalate_human on a bare "no").
   if (output.next_action === "escalate_human" || output.next_action === "escalate_emergency") {
+    if (output.next_action === "escalate_emergency") {
+      return {
+        shouldEscalate: true,
+        reason: output.escalation_reason || "Model requested escalation.",
+        type: "emergency",
+      };
+    }
+    const plainNo =
+      output.intent === "denial" ||
+      (patientUtterance != null && patientUtterance.trim() !== "" && isPlainDecline(patientUtterance));
+    if (plainNo) {
+      return NO_ESCALATION;
+    }
     return {
       shouldEscalate: true,
       reason: output.escalation_reason || "Model requested escalation.",
-      type: output.next_action === "escalate_emergency" ? "emergency" : "human",
+      type: "human",
     };
   }
 
@@ -685,6 +711,7 @@ export interface TurnResult {
 export function processTurn(
   rawLLMOutput: string,
   currentState: ConversationState,
+  patientUtterance?: string,
 ): TurnResult | { error: string } {
   const parsed = parseLLMOutput(rawLLMOutput);
 
@@ -698,6 +725,12 @@ export function processTurn(
 
   // 1. Merge patient identity + turn counters (always safe — never overwrites).
   const partialState = safeMergePatient(currentState, output);
+  // Plain "no" / "no gracias" is unambiguous — reset low-confidence streak so Rule 4
+  // does not escalate after unrelated unclear turns.
+  const adjustedPartial =
+    patientUtterance && isPlainDecline(patientUtterance)
+      ? { ...partialState, consecutive_low_confidence: 0 }
+      : partialState;
 
   // 2. Build an ephemeral previewState for flow validation.
   //    Previews appointment fields as they would look after safeMergeAppointment
@@ -705,10 +738,10 @@ export function processTurn(
   //    negatives when the LLM fills the last required field and fires
   //    offer_appointment on the same turn.
   const { merged: previewAppointment } = safeMergeObj(
-    partialState.appointment,
+    adjustedPartial.appointment,
     output.appointment,
   );
-  const previewState: ConversationState = { ...partialState, appointment: previewAppointment };
+  const previewState: ConversationState = { ...adjustedPartial, appointment: previewAppointment };
 
   // 3. Validate next_action against the preview state.
   const flowValidation = validateFlowAction(output, previewState);
@@ -720,7 +753,7 @@ export function processTurn(
   //    Explicit corrections are independent of flow validity: if the patient
   //    clearly retracts a previous value ("no, Friday instead") the data must
   //    land even when next_action was overridden for an unrelated reason.
-  const correctedState = applyValidatedCorrections(partialState, output);
+  const correctedState = applyValidatedCorrections(adjustedPartial, output);
 
   // 5. Conditionally apply normal fill-null merge.
   //    Blocked when the action was overridden — prevents contaminating state
@@ -730,7 +763,7 @@ export function processTurn(
     : safeMergeAppointment(correctedState, output);
 
   // 5. Check deterministic escalation rules.
-  const escalation = checkEscalation(correctedOutput, newState);
+  const escalation = checkEscalation(correctedOutput, newState, patientUtterance);
 
   // 6. Apply fallback rewrites.
   const fallback = applyFallbacks(correctedOutput, newState);
@@ -808,12 +841,25 @@ export function processTurn(
     }
   }
 
+  // Plain decline must not close the chat: model sometimes sets end_conversation on "no".
+  let finalRawOutput = correctedOutput;
+  if (
+    patientUtterance &&
+    isPlainDecline(patientUtterance) &&
+    !escalation.shouldEscalate &&
+    correctedOutput.next_action === "end_conversation" &&
+    !NO_END_CONVERSATION_OVERRIDE_INTENTS.has(correctedOutput.intent)
+  ) {
+    finalRawOutput = { ...correctedOutput, next_action: "continue" };
+    reply = DECLINE_OFFER_FOLLOWUP_REPLY_ES;
+  }
+
   return {
     reply,
     state: newState,
     escalation,
     fallback,
     flowValidation,
-    rawOutput: correctedOutput,
+    rawOutput: finalRawOutput,
   };
 }

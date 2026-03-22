@@ -6,9 +6,10 @@ import { startOrResumeConversation } from '@/services/conversation.service';
 import { insertMessage, getRecentMessages } from '@/lib/db/messages';
 import { getAIGreeting, LIMITS } from '@/config/constants';
 import { checkRateLimit, getClientIp } from '@/lib/rate-limit';
+import { SessionTokenSchema } from '@/lib/schemas/session';
 
 const StartChatSchema = z.object({
-  session_token: z.string().min(1).max(200),
+  session_token: SessionTokenSchema,
 });
 
 /**

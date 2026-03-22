@@ -24,6 +24,10 @@ Build the staff-side operational MVP for a dental AI receptionist.
 - Mobile-responsive dashboard
 - Streaming AI responses
 
+## Staff / pilot notes
+- Pilot monitoring checklist: [docs/PILOT_MONITORING.md](docs/PILOT_MONITORING.md)
+- Contact merge behavior (name not overwritten on canonical): [docs/STAFF_CONTACT_MERGE.md](docs/STAFF_CONTACT_MERGE.md)
+
 ## Rules
 - Do not redesign the patient chat unless required
 - Work incrementally and keep the app compiling

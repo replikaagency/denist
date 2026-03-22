@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Turn-limit escalation uses shared constant** (`src/lib/conversation/engine.ts`): Rule 5 now compares `state.turn_count` to `LIMITS.MAX_TURNS_BEFORE_ESCALATION` from `config/constants.ts` instead of a hardcoded `20`, so tuning the limit is single-sourced.
+
+### Added
+
+- **Pilot monitoring checklist** (`docs/PILOT_MONITORING.md`): What to watch during deployment (500s on `/api/chat`, handoff types, double-tab / concurrent request caveat).
+- **Staff doc: contact merge** (`docs/STAFF_CONTACT_MERGE.md`): Explains that duplicate phone/email relinks to the canonical contact and does not overwrite existing name fields on that record.
+
 ## [1.1.0] — 2026-03-18
 
 ### Added

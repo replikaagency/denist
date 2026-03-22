@@ -1,0 +1,32 @@
+
+> dental-reception-ai@0.1.0 dev
+> next dev --turbopack
+
+▲ Next.js 16.1.6 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.1.148:3000
+- Environments: .env.local
+
+✓ Starting...
+✓ Ready in 570ms
+ GET / 200 in 932ms (compile: 876ms, render: 56ms)
+ GET / 200 in 15ms (compile: 1835µs, render: 13ms)
+ GET /chat 200 in 308ms (compile: 279ms, render: 29ms)
+ POST /api/chat/start 201 in 1408ms (compile: 238ms, render: 1170ms)
+ POST /api/chat/realtime-token 200 in 294ms (compile: 111ms, render: 183ms)
+{"ts":"2026-03-22T14:42:25.245Z","level":"info","event":"chat.turn_start","conversation_id":"4bf42bc7-212f-42f8-ae36-8e1b7d8a6f3a","user_message_preview":"Hola"}
+{"ts":"2026-03-22T14:42:28.703Z","level":"info","event":"chat.turn_processed","conversation_id":"4bf42bc7-212f-42f8-ae36-8e1b7d8a6f3a","intent":"greeting","intent_confidence":1,"fallback_applied":false}
+{"ts":"2026-03-22T14:42:28.814Z","level":"info","event":"chat.turn_complete","conversation_id":"4bf42bc7-212f-42f8-ae36-8e1b7d8a6f3a","response_preview":"¡Hola! Bienvenido a Clínica Dental Sonrisa Almería. ¿En qué puedo ayudarte hoy?"}
+ POST /api/chat 200 in 4.5s (compile: 310ms, render: 4.2s)
+{"ts":"2026-03-22T14:42:38.398Z","level":"info","event":"chat.turn_start","conversation_id":"4bf42bc7-212f-42f8-ae36-8e1b7d8a6f3a","user_message_preview":"Quiero una cita"}
+{"ts":"2026-03-22T14:42:42.082Z","level":"info","event":"chat.turn_processed","conversation_id":"4bf42bc7-212f-42f8-ae36-8e1b7d8a6f3a","intent":"appointment_request","intent_confidence":1,"fallback_applied":false}
+{"ts":"2026-03-22T14:42:42.194Z","level":"info","event":"chat.turn_complete","conversation_id":"4bf42bc7-212f-42f8-ae36-8e1b7d8a6f3a","response_preview":"Recojo tus datos y preferencias. El equipo de la clínica revisará tu solicitud y te contactará para confirmar disponibilidad. ¿Para qué tipo de tratam"}
+ POST /api/chat 200 in 4.5s (compile: 14ms, render: 4.5s)
+{"ts":"2026-03-22T14:42:51.766Z","level":"info","event":"chat.turn_start","conversation_id":"4bf42bc7-212f-42f8-ae36-8e1b7d8a6f3a","user_message_preview":"dime las qu hay"}
+{"ts":"2026-03-22T14:42:55.983Z","level":"info","event":"chat.turn_processed","conversation_id":"4bf42bc7-212f-42f8-ae36-8e1b7d8a6f3a","intent":"service_inquiry","intent_confidence":0.95,"fallback_applied":false}
+{"ts":"2026-03-22T14:42:56.102Z","level":"info","event":"chat.turn_complete","conversation_id":"4bf42bc7-212f-42f8-ae36-8e1b7d8a6f3a","response_preview":"En Clínica Dental Sonrisa Almería ofrecemos los siguientes servicios: limpieza dental y revisión, blanqueamiento dental, ortodoncia (brackets e Invisa"}
+ POST /api/chat 200 in 5.2s (compile: 11ms, render: 5.2s)
+{"ts":"2026-03-22T14:43:09.751Z","level":"info","event":"chat.turn_start","conversation_id":"4bf42bc7-212f-42f8-ae36-8e1b7d8a6f3a","user_message_preview":"no"}
+{"ts":"2026-03-22T14:43:13.332Z","level":"info","event":"chat.turn_processed","conversation_id":"4bf42bc7-212f-42f8-ae36-8e1b7d8a6f3a","intent":"denial","intent_confidence":1,"fallback_applied":false}
+{"ts":"2026-03-22T14:43:13.532Z","level":"info","event":"chat.turn_complete","conversation_id":"4bf42bc7-212f-42f8-ae36-8e1b7d8a6f3a","response_preview":"Perfecto, si en algún momento necesitas información, pedir cita o tienes alguna otra consulta, aquí estoy para ayudarte. ¡Que tengas un buen día!"}
+ POST /api/chat 200 in 5.1s (compile: 11ms, render: 5.1s)

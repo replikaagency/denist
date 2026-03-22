@@ -4,16 +4,25 @@ import { callLLM, type ChatMessage } from '@/lib/ai/completion';
 import { buildSystemPrompt, getClinicConfig, FEW_SHOT_BY_INTENT } from '@/lib/conversation/prompts';
 import { getMissingFields } from '@/lib/conversation/fields';
 import { processTurn, type TurnResult } from '@/lib/conversation/engine';
+import {
+  classifyConfirmation,
+  DECLINE_OFFER_FOLLOWUP_REPLY_ES,
+  detectCorrectionSignals,
+  isPlainDecline,
+} from '@/lib/conversation/confirmation';
 import { AppError } from '@/lib/errors';
 import { LIMITS } from '@/config/constants';
+import { log } from '@/lib/logger';
 
-import { resolveContact, enrichContact } from './contact.service';
+import { enrichContact } from './contact.service';
+import { getContactById } from '@/lib/db/contacts';
 import {
   verifyOwnership,
   loadState,
   saveState,
   touch,
   transitionStatus,
+  getConversationById,
 } from './conversation.service';
 import { ensureLead } from './lead.service';
 import {
@@ -78,11 +87,10 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     );
   }
 
-  // 1. Resolve contact
-  const contact = await resolveContact({ channel: 'web_chat', session_token });
-
-  // 2. Verify conversation ownership
-  const conversation = await verifyOwnership(conversation_id, contact.id);
+  // 1–2. Conversation is source of truth for identity; ownership = session_token on owner contact
+  let conversation = await verifyOwnership(conversation_id, session_token);
+  let contact = await getContactById(conversation.contact_id);
+  let effectiveContactId = conversation.contact_id;
 
   // 3. Guard: conversation must be AI-active
   if (!conversation.ai_enabled) {
@@ -94,9 +102,9 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     throw AppError.conflict('Esta conversación está cerrada.');
   }
 
-  console.log('[ChatService] turn_start', {
+  log('info', 'chat.turn_start', {
     conversation_id,
-    user_message: content.slice(0, 200),
+    user_message_preview: content.slice(0, 200),
   });
 
   // 4. Persist patient message
@@ -109,6 +117,8 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
 
   // 5. Update last_message_at
   await touch(conversation_id);
+  // Refresh so confirmation expiry and any later reads use DB truth (not stale pre-touch).
+  conversation = await getConversationById(conversation_id);
 
   // 6. Load conversation state
   const state = await loadState(conversation_id);
@@ -152,15 +162,23 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       state.reschedule_target_summary = null;
     } else {
       const pendingAppointment = state.pending_appointment; // non-null inside this block
-      const confirmation = classifyConfirmation(content);
-      console.log('[ChatService] confirmation_classified', {
+      let confirmation = classifyConfirmation(content);
+      if (confirmation === 'yes' && !isAppointmentDataComplete(pendingAppointment)) {
+        confirmation = 'ambiguous';
+      }
+      const canPersistBooking =
+        confirmation === 'yes' &&
+        isAppointmentDataComplete(pendingAppointment) &&
+        !detectCorrectionSignals(content);
+      log('info', 'chat.confirmation_classified', {
         conversation_id,
         result: confirmation,
+        canPersistBooking,
       });
 
-    if (confirmation === 'yes') {
+    if (canPersistBooking) {
       // Patient confirmed — resolve lead, then create or reschedule.
-      const localLead = await ensureLead(contact.id);
+      const localLead = await ensureLead(effectiveContactId);
       await updateConversation(conversation_id, { lead_id: localLead.id });
 
       const isReschedule = !!state.reschedule_target_id;
@@ -168,9 +186,14 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
 
       if (isReschedule) {
         try {
+          console.log('[EVENT]', {
+            type: 'appointment_reschedule',
+            contactId: effectiveContactId,
+            conversationId: conversation_id,
+          });
           await executeReschedule({
             oldRequestId: state.reschedule_target_id!,
-            contactId: contact.id,
+            contactId: effectiveContactId,
             conversationId: conversation_id,
             leadId: localLead.id,
             appointment: pendingAppointment,
@@ -182,13 +205,18 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
         } catch (err: unknown) {
           // Old request was closed between selection and confirmation (e.g. staff acted).
           // Graceful fallback: create a fresh request so the patient is not left stranded.
-          console.error('[ChatService] reschedule_failed', {
+          log('error', 'chat.reschedule_failed', {
             conversation_id,
             old_request_id: state.reschedule_target_id,
             error: err instanceof Error ? err.message : err,
           });
+          console.log('[EVENT]', {
+            type: 'appointment_created',
+            contactId: effectiveContactId,
+            conversationId: conversation_id,
+          });
           await createRequest({
-            contactId: contact.id,
+            contactId: effectiveContactId,
             conversationId: conversation_id,
             leadId: localLead.id,
             appointment: pendingAppointment,
@@ -198,8 +226,13 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
             'Te contactaremos en horario de atención para confirmar. ¿Hay algo más en lo que pueda ayudarte?';
         }
       } else {
+        console.log('[EVENT]', {
+          type: 'appointment_created',
+          contactId: effectiveContactId,
+          conversationId: conversation_id,
+        });
         await createRequest({
-          contactId: contact.id,
+          contactId: effectiveContactId,
           conversationId: conversation_id,
           leadId: localLead.id,
           appointment: pendingAppointment,
@@ -251,7 +284,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     state.confirmation_attempts = attempts;
 
     if (attempts >= 2) {
-      console.warn('[ChatService] confirmation_escalated', { conversation_id, attempts });
+      log('warn', 'chat.confirmation_escalated', { conversation_id, attempts });
       state.awaiting_confirmation = false;
       state.pending_appointment = null;
       state.confirmation_attempts = 0;
@@ -262,9 +295,14 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       state.escalation_reason = 'Patient could not confirm appointment after 2 attempts.';
       await createHandoff({
         conversationId: conversation_id,
-        contactId: contact.id,
+        contactId: effectiveContactId,
         escalation: { shouldEscalate: true, reason: state.escalation_reason, type: 'human' },
         triggerMessageId: patientMessage.id,
+      });
+      console.log('[EVENT]', {
+        type: 'handoff_created',
+        contactId: effectiveContactId,
+        conversationId: conversation_id,
       });
       const escalateReply =
         'No me ha quedado claro si quieres confirmar tu solicitud. Voy a conectarte con un miembro de nuestro equipo para que puedan ayudarte directamente.';
@@ -278,7 +316,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
 
     // Ask again.
     const clarifyReply =
-      'Perdona, no lo he entendido bien. ¿Confirmas la solicitud de cita? Responde "sí" para confirmar o "no" si prefieres cambiar algo.';
+      'Antes de confirmar: ¿quieres cambiar algo o confirmamos tal cual? Responde "sí" para registrar la solicitud o "no" si quieres ajustar fecha, hora o servicio.';
     const aiMessage = await insertMessage({
       conversation_id, role: 'ai', content: clarifyReply,
       metadata: { type: 'awaiting_confirmation', attempts, classifier_result: 'ambiguous', path: 'confirmation_intercept' },
@@ -357,6 +395,20 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     }
   }
 
+  // 6.9 Deferred appointment-offer decline (e.g. listed services, asked if they want a booking).
+  // Bypass LLM so "no" cannot become escalate_human / handoff.
+  if (state.offer_appointment_pending && !state.awaiting_confirmation && isPlainDecline(content)) {
+    state.offer_appointment_pending = false;
+    const aiMessage = await insertMessage({
+      conversation_id,
+      role: 'ai',
+      content: DECLINE_OFFER_FOLLOWUP_REPLY_ES,
+      metadata: { type: 'service_offer_declined', path: 'offer_pending_intercept' },
+    });
+    const finalConversation = await saveState(conversation_id, state);
+    return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+  }
+
   // 7. Build system prompt
   const systemPrompt = buildSystemPrompt(getClinicConfig(), state);
 
@@ -393,7 +445,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   try {
     llmResult = await callLLM(systemPrompt, llmMessages);
   } catch (err) {
-    console.error('[ChatService] llm_call_failed', {
+    log('error', 'chat.llm_call_failed', {
       conversation_id,
       error: err instanceof Error ? err.message : err,
     });
@@ -408,12 +460,12 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   }
 
   // 11. Process turn through the conversation engine
-  const turnResult = processTurn(llmResult.text, state);
+  const turnResult = processTurn(llmResult.text, state, content);
 
   // Phase 3: LLM parse failure — insert a fallback message instead of throwing,
   // so the patient message already persisted is not left orphaned.
   if ('error' in turnResult) {
-    console.error('[ChatService] LLM parse failure', {
+    log('error', 'chat.llm_parse_failure', {
       conversation_id,
       error: turnResult.error,
     });
@@ -431,7 +483,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     };
   }
 
-  console.log('[ChatService] turn_processed', {
+  log('info', 'chat.turn_processed', {
     conversation_id,
     intent: turnResult.rawOutput.intent,
     intent_confidence: turnResult.rawOutput.intent_confidence,
@@ -440,7 +492,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
 
   // Phase 5: log unexpected flow overrides (engine corrected LLM's next_action)
   if (turnResult.flowValidation.overridden) {
-    console.warn('[ChatService] unexpected_flow', {
+    log('warn', 'chat.unexpected_flow', {
       conversation_id,
       original_action: turnResult.flowValidation.originalAction,
       corrected_action: turnResult.flowValidation.correctedAction,
@@ -450,32 +502,68 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
 
   // Phase 5: log when a correction was applied this turn
   if (turnResult.rawOutput.is_correction && turnResult.rawOutput.correction_fields.length > 0) {
-    console.log('[ChatService] correction_applied', {
+    log('info', 'chat.correction_applied', {
       conversation_id,
       correction_fields: turnResult.rawOutput.correction_fields,
     });
   }
 
-  // ── Reschedule initiation ─────────────────────────────────────────────────
-  // When the LLM fires intent=appointment_reschedule and the sub-flow hasn't
-  // started yet, look up the patient's open requests and branch:
-  //   0 → redirect to new booking
-  //   1 → auto-select; enter collecting_new_details
-  //   2+ → present numbered list; enter selecting_target (handled next turn by 6.7)
+  // 12. Execute side-effects
+  let updatedContact = contact;
+
+  const hasPatientFields = turnResult.rawOutput.patient_fields &&
+    Object.values(turnResult.rawOutput.patient_fields).some(v => v !== null && v !== undefined);
+
+  // Fallback name extraction: if the LLM didn't populate full_name but the
+  // patient's message contains a recognisable "me llamo X" pattern, inject it.
+  if (!turnResult.rawOutput.patient_fields?.full_name && !state.patient.full_name) {
+    const fallbackName = extractNameFallback(content);
+    if (fallbackName) {
+      turnResult.rawOutput.patient_fields = {
+        ...turnResult.rawOutput.patient_fields,
+        full_name: fallbackName,
+      };
+      turnResult.state.patient = { ...turnResult.state.patient, full_name: fallbackName };
+      log('info', 'chat.name_fallback_applied', { fallbackName, conversation_id });
+    }
+  }
+
+  if (hasPatientFields || turnResult.rawOutput.patient_fields?.full_name) {
+    const enriched = await enrichContact(effectiveContactId, turnResult.rawOutput.patient_fields);
+    if (enriched) {
+      if (enriched.id !== effectiveContactId) {
+        // Returning patient: enrichContact resolved to the canonical contact.
+        // Relink this conversation so staff sees the correct identity.
+        const fromContactId = effectiveContactId;
+        await updateConversation(conversation_id, { contact_id: enriched.id });
+        conversation = await getConversationById(conversation_id);
+        console.log('[EVENT]', {
+          type: 'merge_contact',
+          conversationId: conversation_id,
+          fromContactId,
+          toContactId: enriched.id,
+          sessionTokenTransferred: true,
+        });
+      }
+      updatedContact = enriched;
+      contact = enriched;
+      effectiveContactId = enriched.id;
+    }
+  }
+
+  // ── Reschedule initiation (after enrich) ─────────────────────────────────
+  // Open requests must be looked up with the canonical contact after phone/email merge
+  // on the same turn; otherwise the stub contact_id sees zero rows.
   const isNewRescheduleIntent =
     turnResult.state.current_intent === 'appointment_reschedule' &&
     turnResult.state.reschedule_phase === 'idle' &&
     !turnResult.state.reschedule_target_id;
 
   if (isNewRescheduleIntent) {
-    const openRequests = await findOpenRequestsForContact(contact.id);
+    const openRequests = await findOpenRequestsForContact(effectiveContactId);
 
     if (openRequests.length === 0) {
       if (preExistingRequest) {
-        // This conversation has an open request that the contact-scoped query
-        // didn't find (e.g. contact_id mismatch on anonymous sessions). The
-        // patient is expressing doubt about the just-registered booking — respond
-        // coherently instead of saying no requests exist.
         turnResult.reply =
           'Tu solicitud ya ha quedado registrada. Si quieres cambiar la fecha, ' +
           'la hora o el servicio, dímelo y preparo una nueva solicitud con la preferencia correcta.';
@@ -507,45 +595,11 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     }
   }
 
-  // 12. Execute side-effects
-  let updatedContact = contact;
-
-  const hasPatientFields = turnResult.rawOutput.patient_fields &&
-    Object.values(turnResult.rawOutput.patient_fields).some(v => v !== null && v !== undefined);
-
-  // Fallback name extraction: if the LLM didn't populate full_name but the
-  // patient's message contains a recognisable "me llamo X" pattern, inject it.
-  if (!turnResult.rawOutput.patient_fields?.full_name && !state.patient.full_name) {
-    const fallbackName = extractNameFallback(content);
-    if (fallbackName) {
-      turnResult.rawOutput.patient_fields = {
-        ...turnResult.rawOutput.patient_fields,
-        full_name: fallbackName,
-      };
-      turnResult.state.patient = { ...turnResult.state.patient, full_name: fallbackName };
-      console.log('[ChatService] name_fallback_applied', { fallbackName, conversation_id });
-    }
-  }
-
-  if (hasPatientFields || turnResult.rawOutput.patient_fields?.full_name) {
-    const enriched = await enrichContact(contact.id, turnResult.rawOutput.patient_fields);
-    if (enriched) {
-      if (enriched.id !== contact.id) {
-        // Returning patient: enrichContact resolved to the canonical contact.
-        // Relink this conversation so staff sees the correct identity.
-        await updateConversation(conversation_id, { contact_id: enriched.id });
-      }
-      updatedContact = enriched;
-    }
-  }
-
-  // Phase 4: hoist lead — ensureLead is called at most once per turn.
-  // Uses updatedContact.id so a returning patient's lead is found on the
-  // canonical contact, not created anew on the anonymous session contact.
+  // Phase 4: hoist lead — ensureLead is called at most once per turn (effectiveContactId).
   const isIdentified = updatedContact.first_name && (updatedContact.phone || updatedContact.email);
   let lead: Lead | null = null;
   if (isIdentified) {
-    lead = await ensureLead(updatedContact.id);
+    lead = await ensureLead(effectiveContactId);
     await updateConversation(conversation_id, { lead_id: lead.id });
   }
 
@@ -603,7 +657,11 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   const isRescheduleReady =
     isRescheduleCollecting && isSchedulingIntent && appointmentDataReady && isIdentified;
 
-  if (isRescheduleReady && (appointmentActionFired || engineCompletedAppointment || deferredAppointment)) {
+  if (
+    isRescheduleReady &&
+    (appointmentActionFired || engineCompletedAppointment || deferredAppointment) &&
+    !detectCorrectionSignals(content)
+  ) {
     turnResult.state.awaiting_confirmation = true;
     turnResult.state.pending_appointment = { ...turnResult.state.appointment };
     turnResult.state.confirmation_attempts = 0;
@@ -619,8 +677,13 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       // Existing request — enrich or apply correction directly.
       // Confirmation already happened on the turn that created the row.
       // lead is guaranteed non-null: isIdentified gate above ensures it was set.
+      console.log('[EVENT]', {
+        type: 'appointment_enriched',
+        contactId: effectiveContactId,
+        conversationId: conversation_id,
+      });
       await createRequest({
-        contactId: contact.id,
+        contactId: effectiveContactId,
         conversationId: conversation_id,
         leadId: lead!.id,
         appointment: turnResult.state.appointment,
@@ -631,21 +694,21 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       turnResult.state.offer_appointment_pending = false;
       turnResult.state.appointment_request_open = true;
     } else if (appointmentDataReady || appointmentActionFired || engineCompletedAppointment) {
-      // First booking: enter the explicit confirmation flow.
-      // No DB row is created yet — we store the snapshot in state and ask the
-      // patient to confirm before writing anything.
-      // appointmentActionFired: LLM fired offer_appointment explicitly.
-      // engineCompletedAppointment: engine completion check determined all fields
-      //   are present (via ask_field + getMissingFields=[]) even when LLM did not
-      //   fire offer_appointment (flow controller may have overridden it). Without
-      //   this, the few-shot "Te lo dejo anotado..." reply passes through unblocked.
-      turnResult.state.awaiting_confirmation = true;
-      turnResult.state.pending_appointment = { ...turnResult.state.appointment };
-      turnResult.state.confirmation_attempts = 0;
-      turnResult.state.completed = false;        // don't lock flow until confirmed
-      turnResult.state.offer_appointment_pending = false;
-      // Override the LLM reply with a structured confirmation summary.
-      turnResult.reply = buildConfirmationSummary(turnResult.state.patient, turnResult.state.appointment);
+      // First booking: enter the explicit confirmation flow unless the same message
+      // signals a correction (date/time/negation) — then keep collecting.
+      if (!detectCorrectionSignals(content)) {
+        // No DB row is created yet — we store the snapshot in state and ask the
+        // patient to confirm before writing anything.
+        turnResult.state.awaiting_confirmation = true;
+        turnResult.state.pending_appointment = { ...turnResult.state.appointment };
+        turnResult.state.confirmation_attempts = 0;
+        turnResult.state.completed = false;        // don't lock flow until confirmed
+        turnResult.state.offer_appointment_pending = false;
+        turnResult.reply = buildConfirmationSummary(turnResult.state.patient, turnResult.state.appointment);
+      } else {
+        turnResult.state.offer_appointment_pending = true;
+        turnResult.state.completed = false;
+      }
     } else {
       // Appointment data still incomplete — keep deferring.
       turnResult.state.offer_appointment_pending = true;
@@ -670,19 +733,35 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       // Re-attempt enrichment from accumulated state if the contact record is still
       // anonymous (either enrichment hasn't run yet or returned null this turn).
       if (!updatedContact.first_name || (!updatedContact.phone && !updatedContact.email)) {
-        const flushEnriched = await enrichContact(contact.id, {
+        const flushEnriched = await enrichContact(effectiveContactId, {
           full_name: state.patient.full_name,
           phone: state.patient.phone,
           email: state.patient.email,
         });
-        if (flushEnriched) updatedContact = flushEnriched;
+        if (flushEnriched) {
+          if (flushEnriched.id !== effectiveContactId) {
+            const fromContactId = effectiveContactId;
+            await updateConversation(conversation_id, { contact_id: flushEnriched.id });
+            conversation = await getConversationById(conversation_id);
+            console.log('[EVENT]', {
+              type: 'merge_contact',
+              conversationId: conversation_id,
+              fromContactId,
+              toContactId: flushEnriched.id,
+              sessionTokenTransferred: true,
+            });
+          }
+          updatedContact = flushEnriched;
+          contact = flushEnriched;
+          effectiveContactId = flushEnriched.id;
+        }
       }
-      const flushLead = await ensureLead(contact.id);
+      const flushLead = await ensureLead(effectiveContactId);
       await updateConversation(conversation_id, { lead_id: flushLead.id });
-      console.log('[ChatService] pre_finalization_lead_flush', {
+      log('info', 'chat.pre_finalization_lead_flush', {
         conversation_id,
         lead_id: flushLead.id,
-        contact_id: contact.id,
+        contact_id: effectiveContactId,
       });
     }
   }
@@ -690,9 +769,14 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   if (turnResult.escalation.shouldEscalate) {
     await createHandoff({
       conversationId: conversation_id,
-      contactId: contact.id,
+      contactId: effectiveContactId,
       escalation: turnResult.escalation,
       triggerMessageId: patientMessage.id,
+    });
+    console.log('[EVENT]', {
+      type: 'handoff_created',
+      contactId: effectiveContactId,
+      conversationId: conversation_id,
     });
   }
 
@@ -721,7 +805,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     },
   });
 
-  console.log('[ChatService] turn_complete', {
+  log('info', 'chat.turn_complete', {
     conversation_id,
     response_preview: aiMessage.content.slice(0, 150),
   });
@@ -752,27 +836,6 @@ function buildLLMMessages(history: Message[]): ChatMessage[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Classify the patient's reply as a yes, no, or ambiguous confirmation.
- * Accent-normalized so "sí" → "si" matches without diacritic handling in regex.
- */
-function classifyConfirmation(text: string): 'yes' | 'no' | 'ambiguous' {
-  const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-  // Intercept uncertainty phrases before YES/NO — prevents "no sé si..." from matching
-  // the conditional conjunction "si" as an affirmative, which would create the appointment.
-  const UNCERTAINTY = /\b(no se|no lo se|no estoy seguro|no sabria|no tengo claro)\b/;
-  if (UNCERTAINTY.test(t)) return 'ambiguous';
-  const YES = /\b(si|yes|confirmo|confirmar|correcto|exacto|adelante|perfecto|de acuerdo|ok|claro|por supuesto|genial|eso es|afirmo|afirmativo|dale|vamos)\b/;
-  const NO = /\b(no|cancelar|cancel|mejor no|prefiero no|cambiar|espera|detener|nope|negativo|olvida|olvidalo|olvídalo)\b/;
-  const CORRECTION = /\b(pero|aunque|en vez de|mejor|cambia|cambiar|no la fecha|no la hora|sino)\b/;
-  if (YES.test(t)) {
-    if (CORRECTION.test(t)) return 'ambiguous';
-    return 'yes';
-  }
-  if (NO.test(t)) return 'no';
-  return 'ambiguous';
-}
-
-/**
  * Build a human-readable confirmation summary to send to the patient before
  * writing any appointment row to the DB.
  */
@@ -780,13 +843,15 @@ function buildConfirmationSummary(
   patient: import('@/lib/conversation/schema').ConversationState['patient'],
   appointment: import('@/lib/conversation/schema').ConversationState['appointment'],
 ): string {
-  const lines: string[] = ['Antes de registrar tu solicitud, déjame confirmarte los datos:'];
+  const lines: string[] = ['Antes de registrar tu solicitud, estos son los datos:'];
   if (patient.full_name) lines.push(`• Nombre: ${patient.full_name}`);
   if (appointment.service_type) lines.push(`• Servicio: ${appointment.service_type}`);
   if (appointment.preferred_date) lines.push(`• Fecha preferida: ${appointment.preferred_date}`);
   if (appointment.preferred_time) lines.push(`• Horario: ${appointment.preferred_time}`);
   if (appointment.preferred_provider) lines.push(`• Dentista: ${appointment.preferred_provider}`);
-  lines.push('\n¿Confirmas que quieres registrar esta solicitud? Responde "sí" para confirmar o "no" si quieres cambiar algo.');
+  lines.push(
+    '\nAntes de confirmar: ¿quieres cambiar algo o confirmamos tal cual? Responde "sí" para registrar o "no" para ajustar algo.',
+  );
   return lines.join('\n');
 }
 
@@ -850,6 +915,8 @@ function buildRescheduleConfirmationSummary(
   if (newAppointment.preferred_date) lines.push(`• Fecha: ${newAppointment.preferred_date}`);
   if (newAppointment.preferred_time) lines.push(`• Horario: ${newAppointment.preferred_time}`);
   if (newAppointment.preferred_provider) lines.push(`• Dentista: ${newAppointment.preferred_provider}`);
-  lines.push('\n¿Confirmas el cambio? Responde "sí" para confirmar o "no" si prefieres dejarlo como está.');
+  lines.push(
+    '\nAntes de confirmar: ¿quieres cambiar algo o confirmamos tal cual? Responde "sí" para aplicar el cambio o "no" para dejarlo como está.',
+  );
   return lines.join('\n');
 }

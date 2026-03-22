@@ -145,3 +145,23 @@ export async function getContactById(id: string): Promise<Contact> {
   if (!data) throw AppError.notFound('Contact', id);
   return data as Contact;
 }
+
+/**
+ * Moves session_token from a stub contact to the canonical duplicate row, then
+ * assigns a fresh UUID to the stub (session_token is NOT NULL UNIQUE).
+ * Keeps browser token + anon Realtime RLS (anon_owns_conversation) aligned with
+ * conversations.contact_id after relink.
+ */
+export async function transferSessionTokenToCanonical(
+  fromContactId: string,
+  toContactId: string,
+): Promise<void> {
+  if (fromContactId === toContactId) return;
+
+  const from = await getContactById(fromContactId);
+  const token = from.session_token;
+  const newStubToken = crypto.randomUUID();
+
+  await updateContact(fromContactId, { session_token: newStubToken });
+  await updateContact(toContactId, { session_token: token });
+}

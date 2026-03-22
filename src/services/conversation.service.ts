@@ -5,6 +5,7 @@ import {
   updateConversation,
   touchConversation,
 } from '@/lib/db/conversations';
+import { getContactById } from '@/lib/db/contacts';
 import { getRecentMessages } from '@/lib/db/messages';
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 import {
@@ -132,13 +133,20 @@ export async function startOrResumeConversation(contactId: string): Promise<{
 }
 
 /**
- * Verify a conversation belongs to a given contact (session auth).
+ * Verify the requester owns this conversation: load conversation (source of truth
+ * for contact_id), then require that contact's session_token matches the token
+ * from the browser (survives contact merge / relink).
  */
 export async function verifyOwnership(
   conversationId: string,
-  contactId: string,
+  sessionToken: string,
 ): Promise<Conversation> {
-  return getConversationForContact(conversationId, contactId);
+  const conversation = await getConversationById(conversationId);
+  const owner = await getContactById(conversation.contact_id);
+  if (owner.session_token !== sessionToken) {
+    throw AppError.notFound('Conversation', conversationId);
+  }
+  return conversation;
 }
 
 /**
