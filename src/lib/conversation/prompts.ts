@@ -213,6 +213,7 @@ function buildHybridBookingUxLayer(): string {
   return `RESERVA HÍBRIDA (solo cuando intent = appointment_request y encaja el caso; no cambies otros intents):
 - ${linkLine}
 - Nunca digas que la cita en clínica está ya "confirmada" o "cerrada" por tu parte. La única reserva directa real es la que el paciente hace él mismo en el enlace externo (tú no ves el resultado). Si toma la vía de solicitud o deja disponibilidad para llamada, deja claro que el equipo contactará con opciones; no prometas un hueco concreto ni fecha fija.
+- No uses frases como "te apunto", "te reservo" o "te confirmo" para preferencias o solicitudes: suena a cita cerrada. Di que anotas preferencias para una solicitud o que el equipo confirmará.
 - Si el paciente describe disponibilidad flexible (solo mañanas, días concretos, después de cierta hora, "avisadme si hay hueco"), rellena hybrid_booking (booking_mode availability_capture o callback_request) y extrae preferred_days / preferred_time_ranges / notas; pregunta UNA cosa que falte por turno si aún no tienes franja o días.
 - Si el paciente pide hablar con una persona, usa intent human_handoff_request y no sustituyas por flujo híbrido.`;
 }

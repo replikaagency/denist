@@ -10,6 +10,7 @@ import {
   detectCorrectionSignals,
   isPlainDecline,
 } from '@/lib/conversation/confirmation';
+import { tryBuildSyntheticNegationSchedulingCorrectionJson } from '@/lib/conversation/scheduling-negation-correction';
 import { AppError } from '@/lib/errors';
 import { LIMITS } from '@/config/constants';
 import { log } from '@/lib/logger';
@@ -142,7 +143,17 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   const preExistingRequest = await findOpenAppointmentRequest(conversation_id);
   state.appointment_request_open = !!preExistingRequest;
 
-  const preExistingHybrid = await getActiveHybridBookingForConversation(conversation_id);
+  let preExistingHybrid: Awaited<ReturnType<typeof getActiveHybridBookingForConversation>> = null;
+  try {
+    preExistingHybrid = await getActiveHybridBookingForConversation(conversation_id);
+  } catch (err) {
+    log('error', 'hybrid_booking.fetch_failed', {
+      conversation_id,
+      phase: 'pre_turn_sync',
+      error: err instanceof Error ? err.message : String(err),
+    });
+    preExistingHybrid = null;
+  }
   state.hybrid_booking_open = !!preExistingHybrid;
 
   // If no open request exists but state.completed is true, the appointment was
@@ -497,7 +508,17 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   }
 
   // 11. Process turn through the conversation engine
-  const turnResult = processTurn(llmResult.text, state, content);
+  let turnResult = processTurn(llmResult.text, state, content);
+
+  // Parse recovery: "no pero mejor el martes" style messages may break model JSON;
+  // apply a deterministic correction turn when applicable.
+  if ('error' in turnResult) {
+    const syntheticJson = tryBuildSyntheticNegationSchedulingCorrectionJson(content, state);
+    if (syntheticJson) {
+      log('info', 'chat.synthetic_negation_scheduling_correction', { conversation_id });
+      turnResult = processTurn(syntheticJson, state, content);
+    }
+  }
 
   // Phase 3: LLM parse failure — insert a fallback message instead of throwing,
   // so the patient message already persisted is not left orphaned.
@@ -711,52 +732,91 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     turnResult.state.current_intent === 'appointment_request' &&
     turnResult.state.reschedule_phase === 'idle'
   ) {
-    const hybridResult = await processHybridBookingTurn({
-      conversationId: conversation_id,
-      contactId: effectiveContactId,
-      leadId: lead.id,
-      patientMessage: content,
-      state: turnResult.state,
-      hybridSignal: turnResult.rawOutput.hybrid_booking,
-      bookingSelfServiceUrl,
-    });
-    hybridDeferredStandardFlow = hybridResult.deferredStandardFlow;
-    if (hybridDeferredStandardFlow) {
-      turnResult.state.offer_appointment_pending = false;
-      turnResult.state.awaiting_confirmation = false;
-      turnResult.state.pending_appointment = null;
-      turnResult.state.confirmation_prompt_at = null;
-      turnResult.state.completed = false;
-      const hbOut = turnResult.rawOutput.hybrid_booking;
-      const choseLink =
-        !!bookingSelfServiceUrl &&
-        hbOut?.patient_declined_direct_link !== true &&
-        (hbOut?.patient_chose_direct_link === true || hbOut?.booking_mode === 'direct_link');
-      if (choseLink) {
-        turnResult.reply = mergeDirectBookingChoiceReply(turnResult.reply, bookingSelfServiceUrl);
-      } else if (hybridResult.capturePayload) {
-        turnResult.reply = mergeAvailabilityCaptureReply(turnResult.reply, hybridResult.capturePayload);
-      } else {
-        turnResult.reply = appendHybridAckToReply(turnResult.reply);
-      }
-    } else if (
-      bookingSelfServiceUrl &&
-      turnResult.rawOutput.hybrid_booking?.assistant_should_offer_choice &&
-      !turnResult.state.hybrid_booking_open &&
-      !turnResult.state.self_service_booking_offer_shown
-    ) {
-      const beforeHybridOffer = turnResult.reply.trim();
-      const url = bookingSelfServiceUrl.trim();
-      turnResult.reply = mergeHybridOfferTwoWaysReply(turnResult.reply, bookingSelfServiceUrl);
-      if (
-        turnResult.reply.trim() !== beforeHybridOffer ||
-        (url && turnResult.reply.includes(url) && turnResult.reply.toLowerCase().includes('dos formas'))
+    try {
+      const hybridResult = await processHybridBookingTurn({
+        conversationId: conversation_id,
+        contactId: effectiveContactId,
+        leadId: lead.id,
+        patientMessage: content,
+        state: turnResult.state,
+        hybridSignal: turnResult.rawOutput.hybrid_booking,
+        bookingSelfServiceUrl,
+      });
+      hybridDeferredStandardFlow = hybridResult.deferredStandardFlow;
+      if (hybridDeferredStandardFlow) {
+        turnResult.state.offer_appointment_pending = false;
+        turnResult.state.awaiting_confirmation = false;
+        turnResult.state.pending_appointment = null;
+        turnResult.state.confirmation_prompt_at = null;
+        turnResult.state.completed = false;
+        const hbOut = turnResult.rawOutput.hybrid_booking;
+        const choseLink =
+          !!bookingSelfServiceUrl &&
+          hbOut?.patient_declined_direct_link !== true &&
+          (hbOut?.patient_chose_direct_link === true || hbOut?.booking_mode === 'direct_link');
+        if (choseLink) {
+          turnResult.reply = mergeDirectBookingChoiceReply(turnResult.reply, bookingSelfServiceUrl);
+        } else if (hybridResult.capturePayload) {
+          turnResult.reply = mergeAvailabilityCaptureReply(turnResult.reply, hybridResult.capturePayload);
+          const cap = hybridResult.capturePayload;
+          if (cap.service_interest && !turnResult.state.appointment.service_type) {
+            turnResult.state.appointment.service_type = cap.service_interest;
+          }
+          if (cap.preferred_time_ranges.length && !turnResult.state.appointment.preferred_time) {
+            const r0 = cap.preferred_time_ranges[0].toLowerCase();
+            if (r0.includes('mañana') || r0.includes('manana')) {
+              turnResult.state.appointment.preferred_time = 'morning';
+            } else if (r0.includes('tarde')) {
+              turnResult.state.appointment.preferred_time = 'afternoon';
+            } else if (r0.includes('noche')) {
+              turnResult.state.appointment.preferred_time = 'evening';
+            } else {
+              turnResult.state.appointment.preferred_time = cap.preferred_time_ranges[0].slice(0, 80);
+            }
+          }
+        } else {
+          turnResult.reply = appendHybridAckToReply(turnResult.reply);
+        }
+      } else if (
+        bookingSelfServiceUrl &&
+        turnResult.rawOutput.hybrid_booking?.assistant_should_offer_choice &&
+        !turnResult.state.hybrid_booking_open &&
+        !turnResult.state.self_service_booking_offer_shown
       ) {
-        turnResult.state.self_service_booking_offer_shown = true;
-        tryEmitBookingLinkShown('llm_assistant_should_offer_choice');
+        const beforeHybridOffer = turnResult.reply.trim();
+        const url = bookingSelfServiceUrl.trim();
+        turnResult.reply = mergeHybridOfferTwoWaysReply(turnResult.reply, bookingSelfServiceUrl);
+        if (
+          turnResult.reply.trim() !== beforeHybridOffer ||
+          (url && turnResult.reply.includes(url) && turnResult.reply.toLowerCase().includes('dos formas'))
+        ) {
+          turnResult.state.self_service_booking_offer_shown = true;
+          tryEmitBookingLinkShown('llm_assistant_should_offer_choice');
+        }
+      }
+      try {
+        turnResult.state.hybrid_booking_open = !!(await getActiveHybridBookingForConversation(conversation_id));
+      } catch (err) {
+        log('error', 'hybrid_booking.fetch_failed', {
+          conversation_id,
+          phase: 'post_hybrid_refresh',
+          error: err instanceof Error ? err.message : String(err),
+        });
+        turnResult.state.hybrid_booking_open = false;
+      }
+    } catch (err) {
+      log('error', 'hybrid_booking.persist_failed', {
+        conversation_id,
+        phase: 'processHybridBookingTurn',
+        error: err instanceof Error ? err.message : String(err),
+      });
+      hybridDeferredStandardFlow = false;
+      try {
+        turnResult.state.hybrid_booking_open = !!(await getActiveHybridBookingForConversation(conversation_id));
+      } catch {
+        turnResult.state.hybrid_booking_open = false;
       }
     }
-    turnResult.state.hybrid_booking_open = !!(await getActiveHybridBookingForConversation(conversation_id));
   }
 
   // Reschedule-ready: all new details collected for a reschedule → enter confirmation.

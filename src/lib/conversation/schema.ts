@@ -130,6 +130,14 @@ export type NextAction = z.infer<typeof NextActionEnum>;
 // Optional hybrid booking signals (LLM — backward compatible when omitted)
 // ---------------------------------------------------------------------------
 
+/** Coerce a single string from the model into a one-element array (common LLM mistake). */
+function coerceHybridStringArray(val: unknown): unknown {
+  if (val === null || val === undefined) return undefined;
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string' && val.trim()) return [val.trim()];
+  return undefined;
+}
+
 /** Fields inside LLM `hybrid_booking` (may be null or omitted). */
 export const HybridBookingFieldsSchema = z.object({
   booking_mode: z
@@ -137,8 +145,8 @@ export const HybridBookingFieldsSchema = z.object({
     .nullable()
     .optional(),
   service_interest: z.string().nullable().optional(),
-  preferred_days: z.array(z.string()).optional(),
-  preferred_time_ranges: z.array(z.string()).optional(),
+  preferred_days: z.preprocess(coerceHybridStringArray, z.array(z.string()).optional()),
+  preferred_time_ranges: z.preprocess(coerceHybridStringArray, z.array(z.string()).optional()),
   availability_notes: z.string().nullable().optional(),
   wants_callback: z.boolean().optional(),
   patient_chose_direct_link: z.boolean().optional(),

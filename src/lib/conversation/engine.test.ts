@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkEscalation, processTurn } from './engine';
+import { checkEscalation, parseLLMOutput, processTurn } from './engine';
 import { createInitialState } from './schema';
 import type { LLMTurnOutput } from './schema';
 import { DECLINE_OFFER_FOLLOWUP_REPLY_ES } from './confirmation';
@@ -146,5 +146,36 @@ describe('processTurn — service decline must not hand off or end chat', () => 
     if ('error' in result) throw new Error(result.error);
     expect(result.escalation.shouldEscalate).toBe(true);
     expect(result.escalation.type).toBe('human');
+  });
+});
+
+describe('parseLLMOutput — resilience for hybrid_booking + JSON', () => {
+  it('coerces string preferred_* arrays on hybrid_booking', () => {
+    const o = baseOutput({
+      intent: 'appointment_request',
+      next_action: 'ask_field',
+      reply: 'Entendido.',
+    });
+    const raw = JSON.stringify({
+      ...o,
+      hybrid_booking: {
+        booking_mode: 'availability_capture',
+        preferred_time_ranges: 'por la mañana',
+        preferred_days: 'lunes',
+        service_interest: 'ortodoncia',
+      },
+    });
+    const r = parseLLMOutput(raw);
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.hybrid_booking?.preferred_time_ranges).toEqual(['por la mañana']);
+      expect(r.data.hybrid_booking?.preferred_days).toEqual(['lunes']);
+    }
+  });
+
+  it('parses JSON wrapped in markdown fences', () => {
+    const o = baseOutput({ intent: 'appointment_request', next_action: 'ask_field', reply: 'Ok.' });
+    const raw = '```json\n' + JSON.stringify(o) + '\n```';
+    expect(parseLLMOutput(raw).success).toBe(true);
   });
 });

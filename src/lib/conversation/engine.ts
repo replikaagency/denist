@@ -673,9 +673,41 @@ export type ParseResult =
   | { success: true; data: LLMTurnOutput }
   | { success: false; error: string; rawOutput: string };
 
+/** Recover JSON when the model wraps content or adds leading/trailing noise. */
+function tryParseJsonObject(raw: string): unknown | null {
+  const trimmed = raw.trim();
+  const attempts: string[] = [trimmed];
+  const fence = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/m);
+  if (fence?.[1]) attempts.unshift(fence[1].trim());
+  const i = trimmed.indexOf('{');
+  const j = trimmed.lastIndexOf('}');
+  if (i >= 0 && j > i) attempts.push(trimmed.slice(i, j + 1));
+  for (const s of attempts) {
+    try {
+      return JSON.parse(s);
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
 export function parseLLMOutput(raw: string): ParseResult {
+  let json: unknown;
   try {
-    const json = JSON.parse(raw);
+    json = JSON.parse(raw.trim());
+  } catch {
+    const recovered = tryParseJsonObject(raw);
+    if (recovered === null) {
+      return {
+        success: false,
+        error: "Invalid JSON",
+        rawOutput: raw,
+      };
+    }
+    json = recovered;
+  }
+  try {
     const parsed = LLMTurnOutputSchema.parse(json);
     return { success: true, data: parsed };
   } catch (err) {

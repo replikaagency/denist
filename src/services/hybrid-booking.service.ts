@@ -1,5 +1,9 @@
 import type { ConversationState, HybridBookingSignal } from '@/lib/conversation/schema';
-import { detectAvailabilityStyleMessage } from '@/lib/conversation/hybrid-booking-detection';
+import {
+  detectAvailabilityStyleMessage,
+  extractHybridAvailabilityHintsFromText,
+  type HybridTextHints,
+} from '@/lib/conversation/hybrid-booking-detection';
 import {
   createHybridBooking,
   getActiveHybridBookingForConversation,
@@ -40,15 +44,59 @@ export function thankDirectBookingChoiceEs(): string {
   );
 }
 
+/** Natural-language recap line (avoids sounding like a fixed appointment). */
+function buildAvailabilityRecapSentence(payload: HybridAvailabilityPayload): string {
+  const { service_interest, preferred_days, preferred_time_ranges } = payload;
+  if (
+    !service_interest &&
+    preferred_days.length === 0 &&
+    preferred_time_ranges.length === 0
+  ) {
+    return '';
+  }
+  const parts: string[] = ['He anotado que'];
+  if (service_interest) {
+    parts.push(`prefieres ${service_interest}`);
+  }
+  if (preferred_days.length) {
+    parts.push(`los ${preferred_days.join(', ')}`);
+  }
+  if (preferred_time_ranges.length) {
+    parts.push(preferred_time_ranges.join('; '));
+  }
+  return `${parts[0]} ${parts.slice(1).join(' ')}.`;
+}
+
+/**
+ * Removes a first sentence that sounds like a confirmed booking (LLM slip), keeps follow-up questions.
+ * Exported for tests.
+ */
+export function stripHybridCommittalLeadIn(reply: string): string {
+  const t = reply.trim();
+  if (!t) return '';
+  const split = t.split(/(?<=[.!?])\s+/);
+  const first = split[0] ?? '';
+  if (
+    first &&
+    /(te apunto|te reservo|te confirmo|te cito\s+para|te dejo\s+(?:la\s+)?cita|reserva\s+confirmada)/i.test(
+      first,
+    )
+  ) {
+    return split.slice(1).join(' ').trim();
+  }
+  return t;
+}
+
 /** Brief read-back after structured availability / callback preference is stored. */
 export function formatAvailabilityCapturedEs(payload: HybridAvailabilityPayload): string {
-  const bits: string[] = [];
-  if (payload.preferred_days.length) bits.push(`días: ${payload.preferred_days.join(', ')}`);
-  if (payload.preferred_time_ranges.length) bits.push(`horarios: ${payload.preferred_time_ranges.join('; ')}`);
-  if (payload.service_interest) bits.push(`motivo: ${payload.service_interest}`);
-  const recap = bits.length ? ` Te lo dejo anotado así (${bits.join(' · ')}).` : '';
+  const recap = buildAvailabilityRecapSentence(payload);
+  const opening = recap
+    ? recap
+    : 'He anotado tu preferencia para una solicitud de cita.';
   return (
-    `Perfecto.${recap} Esto no es una cita confirmada todavía: cuando haya opciones, el equipo te contactará. ` +
+    `${opening}\n\n` +
+    'Esto es una solicitud, no una cita confirmada. Cuando haya opciones, el equipo te contactará. ' +
+    'Ahora voy a recoger algunos datos para registrar tu solicitud. ' +
     'Si quieres añadir alguna nota más, dímelo.'
   );
 }
@@ -60,19 +108,31 @@ export function buildHybridAvailabilityPayload(
   hb: HybridBookingSignal | null | undefined,
   state: Pick<ConversationState, 'appointment'>,
   patientMessage: string,
+  /** When the caller already computed hints (avoids duplicate extraction in one turn). */
+  hintsOverride?: HybridTextHints,
 ): HybridAvailabilityPayload {
+  const hints = hintsOverride ?? extractHybridAvailabilityHintsFromText(patientMessage);
+
   const service_interest =
-    hb?.service_interest?.trim() || state.appointment.service_type?.trim() || null;
+    hb?.service_interest?.trim() ||
+    state.appointment.service_type?.trim() ||
+    hints.service_interest ||
+    null;
 
   const preferred_days = hb?.preferred_days?.length
     ? [...hb.preferred_days]
-    : [];
+    : hints.preferred_days.length
+      ? [...hints.preferred_days]
+      : [];
 
   const ranges: string[] = hb?.preferred_time_ranges?.length
     ? [...hb.preferred_time_ranges]
     : [];
   if (ranges.length === 0 && state.appointment.preferred_time?.trim()) {
     ranges.push(state.appointment.preferred_time.trim());
+  }
+  if (ranges.length === 0 && hints.preferred_time_ranges.length) {
+    ranges.push(...hints.preferred_time_ranges);
   }
 
   let availability_notes = hb?.availability_notes?.trim() || null;
@@ -129,19 +189,25 @@ export async function processHybridBookingTurn(
   const availabilityFromLlm =
     hb?.booking_mode === 'availability_capture' || hb?.booking_mode === 'callback_request';
 
+  const textHints = extractHybridAvailabilityHintsFromText(ctx.patientMessage);
+
   const availabilityFromText =
     !choseLink && detectAvailabilityStyleMessage(ctx.patientMessage);
 
+  /** When regex-based detection misses but we still extracted time-of-day / clock constraints. */
+  const availabilityFromStructuredHints =
+    !choseLink && textHints.preferred_time_ranges.length > 0;
+
   const shouldCaptureAvailability =
     !choseLink &&
-    (availabilityFromLlm || availabilityFromText) &&
+    (availabilityFromLlm || availabilityFromText || availabilityFromStructuredHints) &&
     !declinedLink;
 
   let deferredStandardFlow = false;
   let capturePayload: HybridAvailabilityPayload | undefined;
 
   if (shouldCaptureAvailability) {
-    const payload = buildHybridAvailabilityPayload(hb, ctx.state, ctx.patientMessage);
+    const payload = buildHybridAvailabilityPayload(hb, ctx.state, ctx.patientMessage, textHints);
     capturePayload = payload;
     const existing = await getActiveHybridBookingForConversation(ctx.conversationId);
     if (existing) {
@@ -244,8 +310,15 @@ export function mergeDirectBookingChoiceReply(reply: string, url: string): strin
 export function mergeAvailabilityCaptureReply(reply: string, payload: HybridAvailabilityPayload): string {
   const r = reply.trim();
   const block = formatAvailabilityCapturedEs(payload);
-  if (r.includes('no es una cita confirmada') || r.includes('No es una cita confirmada')) return reply;
-  return `${r}\n\n${block}`;
+  if (
+    /no\s+es\s+una\s+cita\s+confirmada/i.test(r) ||
+    /solicitud,\s+no\s+una\s+cita\s+confirmada/i.test(r)
+  ) {
+    return reply;
+  }
+  const stripped = stripHybridCommittalLeadIn(r);
+  if (!stripped) return block;
+  return `${block}\n\n${stripped}`;
 }
 
 export function appendDirectLinkToReply(reply: string, url: string): string {

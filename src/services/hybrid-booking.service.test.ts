@@ -7,9 +7,11 @@ import {
   mergeAvailabilityCaptureReply,
   mergeDirectBookingChoiceReply,
   mergeHybridOfferTwoWaysReply,
+  stripHybridCommittalLeadIn,
   thankDirectBookingChoiceEs,
 } from './hybrid-booking.service';
 import { createInitialState } from '@/lib/conversation/schema';
+import { extractHybridAvailabilityHintsFromText } from '@/lib/conversation/hybrid-booking-detection';
 
 describe('buildHybridAvailabilityPayload', () => {
   it('merges LLM arrays and appointment.preferred_time into ranges', () => {
@@ -42,6 +44,24 @@ describe('buildHybridAvailabilityPayload', () => {
     );
     expect(payload.booking_mode).toBe('callback_request');
   });
+
+  it('fills service + time ranges from text when LLM hybrid_booking is empty', () => {
+    const state = createInitialState('c-combined');
+    const msg = 'solo puedo por las mañanas y quiero ortodoncia';
+    const hints = extractHybridAvailabilityHintsFromText(msg);
+    const payload = buildHybridAvailabilityPayload(null, state, msg, hints);
+    expect(payload.service_interest).toMatch(/ortodoncia/i);
+    expect(payload.preferred_time_ranges.join(' ')).toMatch(/mañana/i);
+  });
+
+  it('fills limpieza + lunes from combined message without LLM fields', () => {
+    const state = createInitialState('c-combined-2');
+    const msg = 'quiero limpieza, pero solo lunes';
+    const hints = extractHybridAvailabilityHintsFromText(msg);
+    const payload = buildHybridAvailabilityPayload(null, state, msg, hints);
+    expect(payload.service_interest).toMatch(/limpieza/i);
+    expect(payload.preferred_days).toContain('lunes');
+  });
 });
 
 describe('appendDirectLinkToReply', () => {
@@ -68,7 +88,7 @@ describe('hybridOfferTwoWaysBlockEs', () => {
 });
 
 describe('formatAvailabilityCapturedEs', () => {
-  it('states not confirmed and summarizes fields', () => {
+  it('states solicitud (not confirmed) and natural recap', () => {
     const t = formatAvailabilityCapturedEs({
       service_interest: 'Limpieza',
       preferred_days: ['lunes', 'miércoles'],
@@ -77,9 +97,21 @@ describe('formatAvailabilityCapturedEs', () => {
       wants_callback: true,
       booking_mode: 'availability_capture',
     });
-    expect(t).toMatch(/no es una cita confirmada/i);
+    expect(t).toMatch(/solicitud,\s+no\s+una\s+cita\s+confirmada/i);
+    expect(t).toMatch(/He anotado que prefieres Limpieza/);
     expect(t).toContain('lunes');
     expect(t).toContain('18:00');
+    expect(t).toMatch(/registrar tu solicitud/i);
+  });
+});
+
+describe('stripHybridCommittalLeadIn', () => {
+  it('removes committal first sentence and keeps follow-up', () => {
+    const out = stripHybridCommittalLeadIn(
+      'Perfecto, te apunto para ortodoncia los lunes. ¿Me das tu teléfono?',
+    );
+    expect(out).toContain('teléfono');
+    expect(out).not.toMatch(/te apunto/i);
   });
 });
 
@@ -107,19 +139,35 @@ describe('mergeDirectBookingChoiceReply', () => {
 });
 
 describe('mergeAvailabilityCaptureReply', () => {
-  it('appends recap block once', () => {
+  it('puts safe recap first and appends stripped LLM follow-up', () => {
     const payload = buildHybridAvailabilityPayload(
       { preferred_days: ['lunes'], booking_mode: 'availability_capture' },
       createInitialState('cx'),
       'solo lunes',
     );
     const out = mergeAvailabilityCaptureReply('Entendido.', payload);
-    expect(out).toContain('Esto no es una cita confirmada');
+    expect(out).toMatch(/^He anotado que/);
+    expect(out).toMatch(/solicitud,\s+no\s+una\s+cita\s+confirmada/i);
+    expect(out).toContain('Entendido.');
   });
 
   it('skips if reply already has disclaimer', () => {
     const payload = buildHybridAvailabilityPayload(null, createInitialState('cy'), 'x');
     const out = mergeAvailabilityCaptureReply('Ya te dije que no es una cita confirmada.', payload);
     expect(out).toBe('Ya te dije que no es una cita confirmada.');
+  });
+
+  it('drops committal LLM opener and keeps question after deterministic block', () => {
+    const payload = buildHybridAvailabilityPayload(
+      { service_interest: 'ortodoncia', preferred_days: ['lunes'], booking_mode: 'availability_capture' },
+      createInitialState('cz'),
+      'solo lunes ortodoncia',
+    );
+    const out = mergeAvailabilityCaptureReply(
+      'Perfecto, te apunto para ortodoncia los lunes. ¿Tu número de teléfono?',
+      payload,
+    );
+    expect(out.indexOf('He anotado que')).toBeLessThan(out.indexOf('teléfono'));
+    expect(out).not.toMatch(/te apunto/i);
   });
 });
