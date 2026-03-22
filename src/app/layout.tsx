@@ -6,8 +6,9 @@ import { cn } from "@/lib/utils";
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 
 export const metadata: Metadata = {
-  title: "Dental Reception AI",
-  description: "Dental reception AI application",
+  title: "IA Recepción dental",
+  description:
+    "Recepción con IA para clínicas dentales: conversaciones con pacientes y panel del equipo.",
 };
 
 export default function RootLayout({
@@ -16,7 +17,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={cn("font-sans", geist.variable)}>
+    <html lang="es" className={cn("font-sans", geist.variable)}>
       <body>{children}</body>
     </html>
   );

@@ -13,13 +13,13 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  new: 'New',
-  contacted: 'Contacted',
-  qualified: 'Qualified',
-  appointment_requested: 'Appt. Requested',
-  booked: 'Booked',
-  lost: 'Lost',
-  disqualified: 'Disqualified',
+  new: 'Nuevo',
+  contacted: 'Contactado',
+  qualified: 'Cualificado',
+  appointment_requested: 'Cita solicitada',
+  booked: 'Reservado',
+  lost: 'Perdido',
+  disqualified: 'Descartado',
 };
 
 function toTitleCase(str: string) {
@@ -27,7 +27,7 @@ function toTitleCase(str: string) {
 }
 
 function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString([], {
+  return new Date(iso).toLocaleDateString('es-ES', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
@@ -60,29 +60,29 @@ export default async function LeadsPage() {
   return (
     <div className="mx-auto max-w-6xl">
       <div className="mb-6">
-        <h1 className="text-xl font-semibold tracking-tight">Leads</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Prospectos</h1>
         <p className="text-sm text-muted-foreground">
-          Prospective patients captured through the AI chat.
+          Pacientes potenciales captados a través del chat con IA.
         </p>
       </div>
 
       <Card>
         <CardHeader className="py-3 px-5">
           <CardTitle className="text-sm font-medium text-muted-foreground">
-            {count ?? 0} lead{count !== 1 ? 's' : ''}
+            {count ?? 0} {count !== 1 ? 'prospectos' : 'prospecto'}
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           {rows.length === 0 ? (
             <div className="px-5 py-8 text-center text-sm text-muted-foreground">
-              No leads yet. Leads are created when patients share their contact info.
+              Aún no hay prospectos. Se crean cuando el paciente comparte sus datos de contacto.
             </div>
           ) : (
             <div className="divide-y">
               {rows.map((lead) => {
                 const name = lead.contact
-                  ? [lead.contact.first_name, lead.contact.last_name].filter(Boolean).join(' ') || 'Anonymous'
-                  : 'Unknown';
+                  ? [lead.contact.first_name, lead.contact.last_name].filter(Boolean).join(' ') || 'Sin nombre'
+                  : 'Desconocido';
 
                 return (
                   <div key={lead.id} className="flex items-center gap-4 px-5 py-3">

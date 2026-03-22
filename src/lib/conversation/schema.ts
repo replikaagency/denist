@@ -127,6 +127,28 @@ export const NextActionEnum = z.enum([
 export type NextAction = z.infer<typeof NextActionEnum>;
 
 // ---------------------------------------------------------------------------
+// Optional hybrid booking signals (LLM — backward compatible when omitted)
+// ---------------------------------------------------------------------------
+
+/** Fields inside LLM `hybrid_booking` (may be null or omitted). */
+export const HybridBookingFieldsSchema = z.object({
+  booking_mode: z
+    .enum(['direct_link', 'callback_request', 'availability_capture'])
+    .nullable()
+    .optional(),
+  service_interest: z.string().nullable().optional(),
+  preferred_days: z.array(z.string()).optional(),
+  preferred_time_ranges: z.array(z.string()).optional(),
+  availability_notes: z.string().nullable().optional(),
+  wants_callback: z.boolean().optional(),
+  patient_chose_direct_link: z.boolean().optional(),
+  patient_declined_direct_link: z.boolean().optional(),
+  assistant_should_offer_choice: z.boolean().optional(),
+});
+
+export type HybridBookingSignal = z.infer<typeof HybridBookingFieldsSchema>;
+
+// ---------------------------------------------------------------------------
 // The full LLM turn output
 // ---------------------------------------------------------------------------
 
@@ -169,6 +191,10 @@ export const LLMTurnOutputSchema = z.object({
       "Must be empty when is_correction is false. " +
       "Only appointment and symptom fields are valid — patient identity fields cannot be corrected via this mechanism."
     ),
+
+  hybrid_booking: HybridBookingFieldsSchema.nullish().describe(
+    "Optional hybrid intake: offer direct link vs callback, or capture structured availability. Omit or null if not applicable.",
+  ),
 }).superRefine((data, ctx) => {
   if (!data.is_correction && data.correction_fields.length > 0) {
     ctx.addIssue({
@@ -228,6 +254,8 @@ export const ConversationStateSchema = z.object({
   awaiting_confirmation: z.boolean().default(false),
   pending_appointment: AppointmentSchema.nullable().default(null),
   confirmation_attempts: z.number().default(0),
+  // True when an active hybrid_bookings row exists for this conversation (synced from DB each turn).
+  hybrid_booking_open: z.boolean().default(false),
   // Audit and operational metadata. Uses .loose() so unknown keys present in
   // existing DB records are preserved on parse/re-save without a migration.
   // correction_log is expected to remain small (single-digit entries per
@@ -299,6 +327,7 @@ export function createInitialState(conversationId: string): ConversationState {
     awaiting_confirmation: false,
     pending_appointment: null,
     confirmation_attempts: 0,
+    hybrid_booking_open: false,
     metadata: { correction_log: [], correction_count: 0, last_correction_at: null, too_many_corrections: false },
   };
 }

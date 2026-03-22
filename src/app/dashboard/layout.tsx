@@ -3,7 +3,7 @@ import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { DashboardShell } from './dashboard-shell';
 
 export const metadata = {
-  title: 'Staff Dashboard · Dental Reception AI',
+  title: 'Panel de equipo · IA Recepción dental',
 };
 
 export default async function DashboardLayout({
@@ -18,5 +18,5 @@ export default async function DashboardLayout({
     redirect('/login?redirect=/dashboard');
   }
 
-  return <DashboardShell userEmail={user.email ?? 'Staff'}>{children}</DashboardShell>;
+  return <DashboardShell userEmail={user.email ?? 'Equipo'}>{children}</DashboardShell>;
 }

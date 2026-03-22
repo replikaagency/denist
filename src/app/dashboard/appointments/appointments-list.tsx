@@ -24,21 +24,29 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  pending: 'Pending',
-  confirmed: 'Confirmed',
-  cancelled: 'Cancelled',
-  no_show: 'No Show',
-  completed: 'Completed',
+  pending: 'Pendiente',
+  confirmed: 'Confirmada',
+  cancelled: 'Cancelada',
+  no_show: 'No asistió',
+  completed: 'Completada',
 };
 
 const APPOINTMENT_TYPE_LABELS: Record<string, string> = {
-  new_patient: 'New Patient',
-  checkup: 'Check-up',
-  emergency: 'Emergency',
-  whitening: 'Whitening',
-  implant_consult: 'Implant Consult',
-  orthodontic_consult: 'Orthodontic Consult',
-  other: 'Other',
+  new_patient: 'Paciente nuevo',
+  checkup: 'Revisión',
+  emergency: 'Urgencia',
+  whitening: 'Blanqueamiento',
+  implant_consult: 'Consulta de implantes',
+  orthodontic_consult: 'Consulta de ortodoncia',
+  other: 'Otro',
+};
+
+const PREFERRED_TIME_LABELS: Record<string, string> = {
+  morning: 'Mañana',
+  afternoon: 'Tarde',
+  evening: 'Tarde',
+  night: 'Noche',
+  any: 'Flexible',
 };
 
 function toTitleCase(str: string) {
@@ -47,7 +55,7 @@ function toTitleCase(str: string) {
 
 function formatDate(iso: string | null) {
   if (!iso) return '—';
-  return new Date(iso).toLocaleDateString([], {
+  return new Date(iso).toLocaleDateString('es-ES', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
@@ -90,7 +98,7 @@ export function AppointmentsList({
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      alert(err?.error?.message ?? 'Update failed');
+      alert(err?.error?.message ?? 'No se pudo actualizar');
       return;
     }
     setConfirmingId(null);
@@ -108,21 +116,21 @@ export function AppointmentsList({
     <Card>
       <CardHeader className="py-3 px-5">
         <CardTitle className="text-sm font-medium text-muted-foreground">
-          {total} request{total !== 1 ? 's' : ''}
+          {total} {total !== 1 ? 'solicitudes' : 'solicitud'}
         </CardTitle>
       </CardHeader>
       <CardContent className="p-0">
         {requests.length === 0 ? (
           <div className="px-5 py-8 text-center text-sm text-muted-foreground">
-            No appointment requests yet.
+            Aún no hay solicitudes de cita.
           </div>
         ) : (
           <div className="divide-y">
             {requests.map((req) => {
               const contact = req.contact as Record<string, unknown> | null;
               const name = contact
-                ? [contact.first_name, contact.last_name].filter(Boolean).join(' ') || 'Anonymous'
-                : 'Unknown';
+                ? [contact.first_name, contact.last_name].filter(Boolean).join(' ') || 'Sin nombre'
+                : 'Desconocido';
               const status = req.status as string;
               const isPending = status === 'pending';
 
@@ -140,10 +148,15 @@ export function AppointmentsList({
                     </div>
                     <div className="mt-0.5 text-xs text-muted-foreground">
                       {req.preferred_date ? (
-                        <span>Preferred: {formatDate(String(req.preferred_date))}</span>
+                        <span>Preferencia: {formatDate(String(req.preferred_date))}</span>
                       ) : null}
                       {req.preferred_time_of_day ? (
-                        <span> · {String(req.preferred_time_of_day)}</span>
+                        <span>
+                          {' '}
+                          ·{' '}
+                          {PREFERRED_TIME_LABELS[String(req.preferred_time_of_day)] ??
+                            String(req.preferred_time_of_day)}
+                        </span>
                       ) : null}
                       {req.notes ? <span> · {String(req.notes)}</span> : null}
                     </div>
@@ -160,7 +173,7 @@ export function AppointmentsList({
                           className="text-xs"
                           onClick={() => openConfirmDialog(req.id as string)}
                         >
-                          Confirm
+                          Confirmar
                         </Button>
                         <Button
                           size="sm"
@@ -168,7 +181,7 @@ export function AppointmentsList({
                           className="text-xs text-destructive"
                           onClick={() => updateStatus(req.id as string, 'cancelled')}
                         >
-                          Cancel
+                          Anular
                         </Button>
                       </>
                     )}
@@ -184,14 +197,14 @@ export function AppointmentsList({
     <Dialog open={!!confirmingId} onOpenChange={(open) => !open && setConfirmingId(null)}>
       <DialogContent showCloseButton={true}>
         <DialogHeader>
-          <DialogTitle>Confirm appointment</DialogTitle>
+          <DialogTitle>Confirmar cita</DialogTitle>
           <DialogDescription>
-            Enter the booked date and time. This is required to confirm the request.
+            Indique la fecha y hora reservadas. Es obligatorio para confirmar la solicitud.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-2 py-2">
           <label htmlFor="confirm-datetime" className="text-sm font-medium">
-            Date & time
+            Fecha y hora
           </label>
           <Input
             id="confirm-datetime"
@@ -202,13 +215,13 @@ export function AppointmentsList({
         </div>
         <DialogFooter showCloseButton={false}>
           <Button variant="outline" onClick={() => setConfirmingId(null)}>
-            Cancel
+            Cancelar
           </Button>
           <Button
             onClick={submitConfirm}
             disabled={!confirmDatetime.trim()}
           >
-            Confirm
+            Confirmar
           </Button>
         </DialogFooter>
       </DialogContent>

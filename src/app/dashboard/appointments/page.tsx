@@ -12,9 +12,9 @@ export default async function AppointmentsPage() {
   return (
     <div className="mx-auto max-w-6xl">
       <div className="mb-6">
-        <h1 className="text-xl font-semibold tracking-tight">Appointment Requests</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Solicitudes de cita</h1>
         <p className="text-sm text-muted-foreground">
-          Review and manage patient appointment requests.
+          Revise y gestione las solicitudes de cita de los pacientes.
         </p>
       </div>
 

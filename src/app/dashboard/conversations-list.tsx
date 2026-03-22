@@ -36,19 +36,19 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  active: 'AI Active',
-  waiting_human: 'Needs Attention',
-  human_active: 'Staff Active',
-  resolved: 'Resolved',
-  abandoned: 'Abandoned',
+  active: 'IA activa',
+  waiting_human: 'Requiere atención',
+  human_active: 'Atendida por persona',
+  resolved: 'Cerrada',
+  abandoned: 'Abandonada',
 };
 
 const CHANNEL_LABELS: Record<string, string> = {
-  web_chat: 'Web Chat',
-  web: 'Web Chat',
+  web_chat: 'Web',
+  web: 'Web',
   sms: 'SMS',
-  email: 'Email',
-  phone: 'Phone',
+  email: 'Correo',
+  phone: 'Teléfono',
   whatsapp: 'WhatsApp',
 };
 
@@ -59,17 +59,17 @@ function formatTime(iso: string | null) {
   const diffMs = now.getTime() - d.getTime();
   const diffMin = Math.floor(diffMs / 60000);
 
-  if (diffMin < 1) return 'Just now';
-  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffMin < 1) return 'Ahora';
+  if (diffMin < 60) return `hace ${diffMin} min`;
   const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  return d.toLocaleDateString();
+  if (diffHr < 24) return `hace ${diffHr} h`;
+  return d.toLocaleDateString('es-ES');
 }
 
 function contactName(contact: ConversationRow['contact']) {
-  if (!contact) return 'Unknown';
+  if (!contact) return 'Desconocido';
   const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ');
-  return name || contact.email || contact.phone || 'Anonymous';
+  return name || contact.email || contact.phone || 'Sin nombre';
 }
 
 export function ConversationsList({
@@ -121,7 +121,7 @@ export function ConversationsList({
                 router.push(url);
               }}
             >
-              {s === 'all' ? 'All' : STATUS_LABELS[s] ?? s}
+              {s === 'all' ? 'Todas' : STATUS_LABELS[s] ?? s}
               <span className="ml-1.5 text-muted-foreground">({count})</span>
             </Button>
           );
@@ -131,15 +131,15 @@ export function ConversationsList({
       <Card>
         <CardHeader className="py-3 px-5">
           <CardTitle className="text-sm font-medium text-muted-foreground">
-            {total} conversation{total !== 1 ? 's' : ''}
+            {total} {total !== 1 ? 'conversaciones' : 'conversación'}
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           {conversations.length === 0 ? (
             <div className="px-5 py-8 text-center text-sm text-muted-foreground">
               {currentStatus
-                ? `No ${(STATUS_LABELS[currentStatus] ?? currentStatus).toLowerCase()} conversations.`
-                : 'No conversations yet.'}
+                ? `No hay conversaciones en estado «${STATUS_LABELS[currentStatus] ?? currentStatus}».`
+                : 'Aún no hay conversaciones.'}
             </div>
           ) : (
             <div className="divide-y">
@@ -166,20 +166,20 @@ export function ConversationsList({
                         && conv.status !== 'waiting_human'
                         && conv.status !== 'human_active' && (
                           <Badge variant="outline" className="text-[10px] bg-orange-50 text-orange-700 border-orange-200">
-                            AI Paused
+                            IA en pausa
                           </Badge>
                         )}
                     </div>
                     {conv.last_message_preview ? (
                       <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                        <span className="font-medium capitalize">{conv.last_message_role === 'patient' ? 'Patient' : conv.last_message_role === 'human' ? 'Staff' : 'AI'}:</span>{' '}
+                        <span className="font-medium capitalize">{conv.last_message_role === 'patient' ? 'Paciente' : conv.last_message_role === 'human' ? 'Equipo' : 'IA'}:</span>{' '}
                         {conv.last_message_preview.length > 80
                           ? conv.last_message_preview.slice(0, 80) + '…'
                           : conv.last_message_preview}
                       </div>
                     ) : (
                       <div className="mt-0.5 text-xs text-muted-foreground">
-                        {CHANNEL_LABELS[conv.channel] ?? conv.channel} · {conv.contact?.email || conv.contact?.phone || 'No contact info'}
+                        {CHANNEL_LABELS[conv.channel] ?? conv.channel} · {conv.contact?.email || conv.contact?.phone || 'Sin datos de contacto'}
                       </div>
                     )}
                   </div>

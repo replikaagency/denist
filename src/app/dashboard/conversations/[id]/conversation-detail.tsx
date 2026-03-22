@@ -19,22 +19,22 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  active: 'AI Active',
-  waiting_human: 'Needs Attention',
-  human_active: 'Staff Active',
-  resolved: 'Resolved',
-  abandoned: 'Abandoned',
+  active: 'IA activa',
+  waiting_human: 'Requiere atención',
+  human_active: 'Atendida por persona',
+  resolved: 'Cerrada',
+  abandoned: 'Abandonada',
 };
 
 const ROLE_STYLES: Record<string, { label: string; bg: string; container: string }> = {
-  patient: { label: 'Patient', bg: 'bg-blue-50 border-blue-200', container: 'justify-end' },
-  ai: { label: 'AI', bg: 'bg-muted border-border', container: 'justify-start' },
-  human: { label: 'Staff', bg: 'bg-emerald-50 border-emerald-200', container: 'justify-start' },
-  system: { label: 'System', bg: 'bg-yellow-50 border-yellow-200', container: 'justify-center' },
+  patient: { label: 'Paciente', bg: 'bg-blue-50 border-blue-200', container: 'justify-end' },
+  ai: { label: 'IA', bg: 'bg-muted border-border', container: 'justify-start' },
+  human: { label: 'Equipo', bg: 'bg-emerald-50 border-emerald-200', container: 'justify-start' },
+  system: { label: 'Sistema', bg: 'bg-yellow-50 border-yellow-200', container: 'justify-center' },
 };
 
 function formatTime(iso: string) {
-  return new Date(iso).toLocaleString([], {
+  return new Date(iso).toLocaleString('es-ES', {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
@@ -62,8 +62,8 @@ export function ConversationDetail({
     ? [contact.first_name, contact.last_name].filter(Boolean).join(' ') ||
       (contact.email as string) ||
       (contact.phone as string) ||
-      'Anonymous'
-    : 'Unknown';
+      'Sin nombre'
+    : 'Desconocido';
 
   const canReply = status === 'waiting_human' || status === 'human_active';
   const canTakeover = status === 'waiting_human';
@@ -176,7 +176,7 @@ export function ConversationDetail({
         <Link href="/dashboard">
           <Button variant="ghost" size="sm" className="gap-1.5">
             <ArrowLeft className="size-3.5" />
-            Back
+            Volver
           </Button>
         </Link>
         <div className="flex-1">
@@ -194,13 +194,13 @@ export function ConversationDetail({
           {canTakeover && (
             <Button size="sm" variant="outline" className="gap-1.5" onClick={handleTakeover}>
               <UserCheck className="size-3.5" />
-              Take Over
+              Tomar conversación
             </Button>
           )}
           {canResolve && (
             <Button size="sm" variant="outline" className="gap-1.5" onClick={handleResolve}>
               <CheckCircle className="size-3.5" />
-              Resolve
+              Cerrar conversación
             </Button>
           )}
         </div>
@@ -211,32 +211,32 @@ export function ConversationDetail({
         <Card>
           <CardHeader className="py-3 px-5">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Contact Info
+              Datos de contacto
             </CardTitle>
           </CardHeader>
           <CardContent className="px-5 pb-4 pt-0">
             <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm">
               {contact.first_name ? (
                 <div>
-                  <span className="text-muted-foreground">Name: </span>
+                  <span className="text-muted-foreground">Nombre: </span>
                   {String(contact.first_name)} {contact.last_name ? String(contact.last_name) : ''}
                 </div>
               ) : null}
               {contact.email ? (
                 <div>
-                  <span className="text-muted-foreground">Email: </span>
+                  <span className="text-muted-foreground">Correo: </span>
                   {String(contact.email)}
                 </div>
               ) : null}
               {contact.phone ? (
                 <div>
-                  <span className="text-muted-foreground">Phone: </span>
+                  <span className="text-muted-foreground">Teléfono: </span>
                   {String(contact.phone)}
                 </div>
               ) : null}
               {contact.insurance_provider ? (
                 <div>
-                  <span className="text-muted-foreground">Insurance: </span>
+                  <span className="text-muted-foreground">Seguro: </span>
                   {String(contact.insurance_provider)}
                 </div>
               ) : null}
@@ -250,7 +250,7 @@ export function ConversationDetail({
         <Card className="border-amber-200 bg-amber-50">
           <CardContent className="px-5 py-3">
             <div className="text-sm">
-              <span className="font-medium text-amber-800">Escalation reason: </span>
+              <span className="font-medium text-amber-800">Motivo de derivación: </span>
               <span className="text-amber-700">
                 {handoff.reason as string}
                 {handoff.notes ? ` — ${handoff.notes}` : ''}
@@ -299,7 +299,7 @@ export function ConversationDetail({
               <Textarea
                 value={replyText}
                 onChange={(e) => setReplyText(e.target.value)}
-                placeholder="Type your reply to the patient..."
+                placeholder="Escriba su respuesta al paciente…"
                 className="min-h-[80px] flex-1 text-sm"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -317,9 +317,11 @@ export function ConversationDetail({
               </Button>
             </div>
             <p className="mt-1.5 text-[11px] text-muted-foreground">
-              ⌘ Cmd / Ctrl + Enter to send
+              ⌘ Cmd / Ctrl + Intro para enviar
               {canTakeover && (
-                <span className="ml-2 text-amber-600">· Sending a reply will claim this conversation.</span>
+                <span className="ml-2 text-amber-600">
+                  · Al enviar una respuesta se asignará esta conversación a usted.
+                </span>
               )}
             </p>
           </CardContent>

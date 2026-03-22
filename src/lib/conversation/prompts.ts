@@ -201,6 +201,23 @@ function buildFieldCollectionLayer(): string {
 }
 
 // ---------------------------------------------------------------------------
+// Layer 4b — Hybrid booking UX (conservative; only when relevant)
+// ---------------------------------------------------------------------------
+
+function buildHybridBookingUxLayer(): string {
+  const urlConfigured = !!process.env.BOOKING_SELF_SERVICE_URL?.trim();
+  const linkLine = urlConfigured
+    ? 'Hay enlace de reserva online en el contexto: puedes ofrecer reserva directa frente a solicitud con disponibilidad para que el equipo contacte.'
+    : 'No hay enlace de reserva online en contexto: no inventes URL; ofrece solo la solicitud con disponibilidad y registro para contacto del equipo.';
+
+  return `RESERVA HÍBRIDA (solo cuando intent = appointment_request y encaja el caso; no cambies otros intents):
+- ${linkLine}
+- Nunca digas que la cita en clínica está ya "confirmada" o "cerrada" por tu parte. La única reserva directa real es la que el paciente hace él mismo en el enlace externo (tú no ves el resultado). Si toma la vía de solicitud o deja disponibilidad para llamada, deja claro que el equipo contactará con opciones; no prometas un hueco concreto ni fecha fija.
+- Si el paciente describe disponibilidad flexible (solo mañanas, días concretos, después de cierta hora, "avisadme si hay hueco"), rellena hybrid_booking (booking_mode availability_capture o callback_request) y extrae preferred_days / preferred_time_ranges / notas; pregunta UNA cosa que falte por turno si aún no tienes franja o días.
+- Si el paciente pide hablar con una persona, usa intent human_handoff_request y no sustituyas por flujo híbrido.`;
+}
+
+// ---------------------------------------------------------------------------
 // Layer 5 — Output Format Instructions
 // ---------------------------------------------------------------------------
 
@@ -229,8 +246,18 @@ Debes responder con un único objeto JSON que siga exactamente esta estructura. 
   "contains_pricing": <true|false>,
 
   "is_correction": <true|false>,
-  "correction_fields": ["<campos corregidos, normalmente vacío>"]
+  "correction_fields": ["<campos corregidos, normalmente vacío>"],
+
+  "hybrid_booking": <objeto híbrido o null — ver reglas abajo>
 }
+
+Campo opcional "hybrid_booking" (null u omitido si no aplica):
+- Si hay enlace en contexto: "assistant_should_offer_choice": true cuando el paciente quiere cita y ya tienes nombre y teléfono (y aún no hay registro híbrido activo en estado), para presentar las dos opciones (enlace vs solicitud/disponibilidad).
+- "patient_chose_direct_link": true si elige explícitamente reservar por el enlace / online.
+- "patient_declined_direct_link": true si prefiere que le llamen o dejar solicitud sin usar el enlace.
+- "booking_mode": "availability_capture" o "callback_request" si da restricciones de disponibilidad sin fecha cerrada o pide que le avisen.
+- Rellena "preferred_days", "preferred_time_ranges", "availability_notes", "wants_callback" cuando corresponda.
+- No uses hybrid_booking para sustituir una solicitud de cita completa con fecha concreta si el paciente la ha dado: en ese caso sigue el flujo normal de confirmación.
 
 CRÍTICO:
 - "reply" es lo que ve el paciente. Hazlo cercano, humano y útil. Responde siempre en español.
@@ -269,7 +296,11 @@ Intención actual: ${state.current_intent ?? "(aún no determinada)"}
 Urgencia actual: ${state.current_urgency}
 Turnos consecutivos con baja confianza: ${state.consecutive_low_confidence}
 Solicitud de cita ya registrada: ${state.appointment_request_open ? "SÍ — no vuelvas a ofrecer ni registrar una cita; la solicitud ya existe." : "no"}
-Flujo de reserva completado: ${state.completed ? "SÍ — responde a las preguntas del paciente con normalidad; no inicies un nuevo flujo de reserva." : "no"}`;
+Registro híbrido (disponibilidad / enlace) activo: ${state.hybrid_booking_open ? "SÍ — ya hay una entrada de reserva híbrida; no dupliques ofertas innecesarias." : "no"}
+Flujo de reserva completado: ${state.completed ? "SÍ — responde a las preguntas del paciente con normalidad; no inicies un nuevo flujo de reserva." : "no"}
+${process.env.BOOKING_SELF_SERVICE_URL?.trim()
+    ? `Enlace de reserva online configurado: ${process.env.BOOKING_SELF_SERVICE_URL.trim()}`
+    : "Enlace de reserva online: no configurado (no ofrezcas URL propia)."}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +332,8 @@ export function buildSystemPrompt(
     buildTaxonomyLayer(),
     "",
     buildFieldCollectionLayer(),
+    "",
+    buildHybridBookingUxLayer(),
     "",
     buildOutputFormatLayer(),
     "",

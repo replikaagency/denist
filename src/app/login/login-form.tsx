@@ -29,9 +29,9 @@ export function LoginForm({ redirectTo }: { redirectTo?: string }) {
         return;
       }
 
-      setError('Invalid email or password. Please try again.');
+      setError('Correo o contraseña incorrectos. Inténtelo de nuevo.');
     } catch {
-      setError('Something went wrong. Please try again.');
+      setError('Algo ha salido mal. Inténtelo de nuevo.');
     }
 
     setLoading(false);
@@ -49,7 +49,7 @@ export function LoginForm({ redirectTo }: { redirectTo?: string }) {
 
           <div className="space-y-2">
             <label htmlFor="email" className="text-sm font-medium">
-              Email
+              Correo electrónico
             </label>
             <Input
               id="email"
@@ -64,7 +64,7 @@ export function LoginForm({ redirectTo }: { redirectTo?: string }) {
 
           <div className="space-y-2">
             <label htmlFor="password" className="text-sm font-medium">
-              Password
+              Contraseña
             </label>
             <Input
               id="password"
@@ -79,7 +79,7 @@ export function LoginForm({ redirectTo }: { redirectTo?: string }) {
 
         <CardFooter>
           <Button type="submit" className="w-full" disabled={loading}>
-            {loading ? 'Signing in…' : 'Sign in'}
+            {loading ? 'Entrando…' : 'Iniciar sesión'}
           </Button>
         </CardFooter>
       </form>

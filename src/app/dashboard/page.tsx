@@ -71,9 +71,9 @@ export default async function DashboardPage({
   return (
     <div className="mx-auto max-w-6xl">
       <div className="mb-6">
-        <h1 className="text-xl font-semibold tracking-tight">Conversations</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Conversaciones</h1>
         <p className="text-sm text-muted-foreground">
-          Monitor and manage patient conversations.
+          Supervisa y gestiona las conversaciones con pacientes.
         </p>
       </div>
 

@@ -34,6 +34,14 @@ import {
   summarizeRequest,
 } from './appointment.service';
 import { createHandoff } from './handoff.service';
+import { getActiveHybridBookingForConversation } from '@/lib/db/hybrid-bookings';
+import {
+  appendHybridAckToReply,
+  mergeAvailabilityCaptureReply,
+  mergeDirectBookingChoiceReply,
+  mergeHybridOfferTwoWaysReply,
+  processHybridBookingTurn,
+} from './hybrid-booking.service';
 
 import type { Contact, Conversation, Lead, Message } from '@/types/database';
 
@@ -129,6 +137,9 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   // cancelled/completed externally by staff. Result reused in appointment block.
   const preExistingRequest = await findOpenAppointmentRequest(conversation_id);
   state.appointment_request_open = !!preExistingRequest;
+
+  const preExistingHybrid = await getActiveHybridBookingForConversation(conversation_id);
+  state.hybrid_booking_open = !!preExistingHybrid;
 
   // If no open request exists but state.completed is true, the appointment was
   // cancelled / completed / no_showed externally by staff after the flag was
@@ -646,6 +657,50 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     turnResult.rawOutput.correction_fields.length > 0 &&
     hasOpenRequest === true;
 
+  // Hybrid booking (direct link + structured availability) — new appointment_request only.
+  let hybridDeferredStandardFlow = false;
+  const bookingSelfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL?.trim() ?? '';
+  if (
+    !turnResult.escalation.shouldEscalate &&
+    isIdentified &&
+    lead &&
+    !hasOpenRequest &&
+    turnResult.state.current_intent === 'appointment_request' &&
+    turnResult.state.reschedule_phase === 'idle'
+  ) {
+    const hybridResult = await processHybridBookingTurn({
+      conversationId: conversation_id,
+      contactId: effectiveContactId,
+      leadId: lead.id,
+      patientMessage: content,
+      state: turnResult.state,
+      hybridSignal: turnResult.rawOutput.hybrid_booking,
+      bookingSelfServiceUrl,
+    });
+    hybridDeferredStandardFlow = hybridResult.deferredStandardFlow;
+    if (hybridDeferredStandardFlow) {
+      turnResult.state.offer_appointment_pending = false;
+      turnResult.state.awaiting_confirmation = false;
+      turnResult.state.pending_appointment = null;
+      turnResult.state.completed = false;
+      const hbOut = turnResult.rawOutput.hybrid_booking;
+      const choseLink =
+        !!bookingSelfServiceUrl &&
+        hbOut?.patient_declined_direct_link !== true &&
+        (hbOut?.patient_chose_direct_link === true || hbOut?.booking_mode === 'direct_link');
+      if (choseLink) {
+        turnResult.reply = mergeDirectBookingChoiceReply(turnResult.reply, bookingSelfServiceUrl);
+      } else if (hybridResult.capturePayload) {
+        turnResult.reply = mergeAvailabilityCaptureReply(turnResult.reply, hybridResult.capturePayload);
+      } else {
+        turnResult.reply = appendHybridAckToReply(turnResult.reply);
+      }
+    } else if (bookingSelfServiceUrl && turnResult.rawOutput.hybrid_booking?.assistant_should_offer_choice) {
+      turnResult.reply = mergeHybridOfferTwoWaysReply(turnResult.reply, bookingSelfServiceUrl);
+    }
+    turnResult.state.hybrid_booking_open = !!(await getActiveHybridBookingForConversation(conversation_id));
+  }
+
   // Reschedule-ready: all new details collected for a reschedule → enter confirmation.
   // Runs BEFORE the generic appointment block so it takes precedence over the
   // normal new-booking path. isRescheduleCollecting guards against firing
@@ -672,7 +727,11 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       turnResult.state.patient,
       turnResult.state.appointment,
     );
-  } else if ((appointmentActionFired || engineCompletedAppointment || deferredAppointment || isCorrectionWithOpenRequest) && isIdentified) {
+  } else if (
+    (!hybridDeferredStandardFlow || hasOpenRequest) &&
+    (appointmentActionFired || engineCompletedAppointment || deferredAppointment || isCorrectionWithOpenRequest) &&
+    isIdentified
+  ) {
     if (hasOpenRequest) {
       // Existing request — enrich or apply correction directly.
       // Confirmation already happened on the turn that created the row.

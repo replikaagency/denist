@@ -52,6 +52,18 @@ export type HandoffReason =
   | 'emergency'
   | 'other';
 
+export type HybridBookingMode =
+  | 'direct_link'
+  | 'callback_request'
+  | 'availability_capture';
+
+export type HybridBookingStatus =
+  | 'new'
+  | 'pending_slot'
+  | 'contacted'
+  | 'booked'
+  | 'closed';
+
 // ---------------------------------------------------------------------------
 // Row types (what comes back from the database)
 // ---------------------------------------------------------------------------
@@ -144,6 +156,23 @@ export interface HandoffEvent {
   assigned_to: string | null;
   resolved_at: string | null;
   notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HybridBooking {
+  id: string;
+  contact_id: string;
+  conversation_id: string | null;
+  lead_id: string | null;
+  service_interest: string | null;
+  preferred_days: string[];
+  preferred_time_ranges: string[];
+  availability_notes: string | null;
+  wants_callback: boolean;
+  booking_mode: HybridBookingMode;
+  status: HybridBookingStatus;
+  metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }
@@ -336,6 +365,42 @@ export type Database = {
         };
         Relationships: GenericRelationship[];
       };
+      hybrid_bookings: {
+        Row: HybridBooking;
+        Insert: {
+          id?: string;
+          contact_id: string;
+          conversation_id?: string | null;
+          lead_id?: string | null;
+          service_interest?: string | null;
+          preferred_days?: string[];
+          preferred_time_ranges?: string[];
+          availability_notes?: string | null;
+          wants_callback?: boolean;
+          booking_mode: HybridBookingMode;
+          status?: HybridBookingStatus;
+          metadata?: Record<string, unknown>;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          contact_id?: string;
+          conversation_id?: string | null;
+          lead_id?: string | null;
+          service_interest?: string | null;
+          preferred_days?: string[];
+          preferred_time_ranges?: string[];
+          availability_notes?: string | null;
+          wants_callback?: boolean;
+          booking_mode?: HybridBookingMode;
+          status?: HybridBookingStatus;
+          metadata?: Record<string, unknown>;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: GenericRelationship[];
+      };
       handoff_events: {
         Row: HandoffEvent;
         Insert: {
@@ -379,6 +444,8 @@ export type Database = {
       appointment_type: AppointmentType;
       appointment_request_status: AppointmentRequestStatus;
       handoff_reason: HandoffReason;
+      hybrid_booking_mode: HybridBookingMode;
+      hybrid_booking_status: HybridBookingStatus;
     };
     CompositeTypes: {
       [_ in never]: never;
@@ -395,4 +462,5 @@ export type LeadInsert = Database['public']['Tables']['leads']['Insert'];
 export type ConversationInsert = Database['public']['Tables']['conversations']['Insert'];
 export type MessageInsert = Database['public']['Tables']['messages']['Insert'];
 export type AppointmentRequestInsert = Database['public']['Tables']['appointment_requests']['Insert'];
+export type HybridBookingInsert = Database['public']['Tables']['hybrid_bookings']['Insert'];
 export type HandoffEventInsert = Database['public']['Tables']['handoff_events']['Insert'];
