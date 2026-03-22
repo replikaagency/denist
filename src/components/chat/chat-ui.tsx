@@ -470,3 +470,5 @@ export function ChatUI() {
     </Card>
   );
 }
+
+export default ChatUI;
