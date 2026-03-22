@@ -33,3 +33,4 @@ Thumbs.db
 # vercel
 .vercel/
 .vercel
+.env.vercel.check
