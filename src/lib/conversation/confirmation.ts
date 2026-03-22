@@ -126,3 +126,43 @@ export function isPlainDecline(text: string): boolean {
 /** Natural follow-up after the patient declines a service / appointment offer (Spanish). */
 export const DECLINE_OFFER_FOLLOWUP_REPLY_ES =
   'Perfecto. Si quieres, también puedo ayudarte con horarios, precios, urgencias o resolver dudas. ¿Qué necesitas?';
+
+// ---------------------------------------------------------------------------
+// Frustration detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Patterns that unambiguously signal patient frustration with the bot.
+ * Intentionally narrow — only clear signals. Borderline expressions ("ugh",
+ * "esto es difícil") are left to the LLM (complaint / human_handoff_request).
+ *
+ * Note: "quiero hablar con una persona" is already caught by the LLM via
+ * human_handoff_request intent — not duplicated here.
+ */
+const FRUSTRATION_PATTERNS: RegExp[] = [
+  /no\s+me\s+entiendes?/,
+  /no\s+me\s+ayudas?/,
+  /no\s+sirves?\b/,
+  /esto\s+no\s+(sirve|funciona)/,
+  /eres?\s+un?\s+bot\b/,
+  /hablo\s+con\s+una?\s+(maquina|robot|bot)/,
+  /\binutil\b/,
+  /me\s+(desespera|frustra)\b/,
+  /estoy\s+(harto|harta|frustrado|frustrada)\b/,
+  /que\s+asco\b/,
+  /que\s+desastre\b/,
+];
+
+/**
+ * Returns true when the message clearly signals the patient is frustrated
+ * with the bot and should be routed to a human without waiting for the LLM
+ * to classify it (which may take 3 low-confidence turns).
+ */
+export function isFrustrationSignal(text: string): boolean {
+  const t = normalizeConfirmationText(text);
+  return FRUSTRATION_PATTERNS.some((re) => re.test(t));
+}
+
+/** Reply shown when a frustration signal triggers deterministic escalation. */
+export const FRUSTRATION_ESCALATION_REPLY_ES =
+  'Lo siento, entiendo que esto ha sido frustrante. Voy a conectarte ahora con un miembro del equipo para que puedan atenderte directamente.';

@@ -8,6 +8,8 @@ import {
   classifyConfirmation,
   DECLINE_OFFER_FOLLOWUP_REPLY_ES,
   detectCorrectionSignals,
+  isFrustrationSignal,
+  FRUSTRATION_ESCALATION_REPLY_ES,
   isPlainDecline,
 } from '@/lib/conversation/confirmation';
 import { tryBuildSyntheticNegationSchedulingCorrectionJson } from '@/lib/conversation/scheduling-negation-correction';
@@ -457,6 +459,35 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
   }
 
+  // 6.10. Deterministic frustration intercept — fires ONLY on unambiguous signals
+  // ("no me entiendes", "inútil", "estoy harto"…). Bypasses LLM to avoid the
+  // complaint→escalation path taking 3 low-confidence turns. Does NOT duplicate
+  // the LLM human_handoff_request or complaint routes — this is a fast-path guard
+  // for cases where the signal is unequivocal. Skips if already escalated.
+  if (!state.escalated && isFrustrationSignal(content)) {
+    state.escalated = true;
+    state.escalation_reason = 'Deterministic frustration signal detected.';
+    await createHandoff({
+      conversationId: conversation_id,
+      contactId: effectiveContactId,
+      escalation: { shouldEscalate: true, reason: state.escalation_reason, type: 'human' },
+      triggerMessageId: patientMessage.id,
+    });
+    log('info', 'event.handoff_created', {
+      conversation_id,
+      contact_id: effectiveContactId,
+      path: 'frustration_intercept',
+    });
+    const aiMessage = await insertMessage({
+      conversation_id,
+      role: 'ai',
+      content: FRUSTRATION_ESCALATION_REPLY_ES,
+      metadata: { type: 'frustration_escalated', path: 'frustration_intercept' },
+    });
+    const finalConversation = await saveState(conversation_id, state);
+    return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+  }
+
   // 7. Build system prompt
   const systemPrompt = buildSystemPrompt(getClinicConfig(), state);
 
@@ -539,6 +570,23 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       conversation,
       turnResult: null,
     };
+  }
+
+  // Guard: do not repeat the exact same question twice in a row.
+  // Compares (lowercased, collapsed whitespace) against the last AI message
+  // in history. If identical, substitute a short redirect to keep the flow moving.
+  // Uses existing `history` — no new state or DB queries.
+  {
+    const lastAi = history.slice().reverse().find((m) => m.role === 'ai');
+    if (lastAi) {
+      const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+      if (norm(turnResult.reply) === norm(lastAi.content)) {
+        turnResult.reply =
+          '¿Hay algo más en lo que pueda ayudarte? Si quieres, puedo asistirte con horarios, ' +
+          'precios o cualquier otra consulta sobre la clínica.';
+        log('info', 'chat.repeat_question_avoided', { conversation_id });
+      }
+    }
   }
 
   log('info', 'chat.turn_processed', {

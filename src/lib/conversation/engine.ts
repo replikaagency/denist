@@ -264,6 +264,17 @@ export function applyFallbacks(
     };
   }
 
+  // Fallback 6: Empty / whitespace reply — should never reach production but
+  // guard here so the patient always gets a usable response.
+  if (!output.reply || output.reply.trim() === '') {
+    return {
+      applied: true,
+      rewrittenReply:
+        'Lo siento, algo ha ido mal con mi respuesta. ¿Podrías repetir tu pregunta de otra forma?',
+      reason: 'LLM returned an empty reply — replaced with a safe fallback.',
+    };
+  }
+
   return NO_FALLBACK;
 }
 

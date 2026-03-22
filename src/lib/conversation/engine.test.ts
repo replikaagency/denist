@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkEscalation, parseLLMOutput, processTurn } from './engine';
+import { applyFallbacks, checkEscalation, parseLLMOutput, processTurn } from './engine';
 import { createInitialState } from './schema';
 import type { LLMTurnOutput } from './schema';
 import { DECLINE_OFFER_FOLLOWUP_REPLY_ES } from './confirmation';
@@ -177,5 +177,34 @@ describe('parseLLMOutput — resilience for hybrid_booking + JSON', () => {
     const o = baseOutput({ intent: 'appointment_request', next_action: 'ask_field', reply: 'Ok.' });
     const raw = '```json\n' + JSON.stringify(o) + '\n```';
     expect(parseLLMOutput(raw).success).toBe(true);
+  });
+});
+
+describe('applyFallbacks — empty reply guard', () => {
+  const state = createInitialState('c1');
+
+  it('applies fallback when reply is empty string', () => {
+    const out = baseOutput({ reply: '' });
+    const result = applyFallbacks(out, state);
+    expect(result.applied).toBe(true);
+    expect(result.rewrittenReply).toBeTruthy();
+  });
+
+  it('applies fallback when reply is only whitespace', () => {
+    const out = baseOutput({ reply: '   ' });
+    const result = applyFallbacks(out, state);
+    expect(result.applied).toBe(true);
+  });
+
+  it('does not apply empty-reply fallback for normal reply', () => {
+    const out = baseOutput({ reply: 'De acuerdo, ¿cuál es su nombre?' });
+    const result = applyFallbacks(out, state);
+    // Only checks the empty-reply fallback — other fallbacks may still fire
+    if (!result.applied) {
+      expect(result.rewrittenReply).toBeNull();
+    } else {
+      // If another fallback fired, the reason should NOT be about empty reply
+      expect(result.reason).not.toMatch(/empty/i);
+    }
   });
 });

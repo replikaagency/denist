@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyConfirmation,
   detectCorrectionSignals,
+  isFrustrationSignal,
   isPlainDecline,
   normalizeConfirmationText,
 } from './confirmation';
@@ -67,6 +68,27 @@ describe('normalizeConfirmationText', () => {
   it('strips accents for matching', () => {
     expect(normalizeConfirmationText('Sí')).toBe('si');
     expect(normalizeConfirmationText('DÍA')).toBe('dia');
+  });
+});
+
+describe('isFrustrationSignal', () => {
+  it('detects clear frustration expressions', () => {
+    expect(isFrustrationSignal('no me entiendes')).toBe(true);
+    expect(isFrustrationSignal('eres un bot inútil')).toBe(true);
+    expect(isFrustrationSignal('estoy harto')).toBe(true);
+    expect(isFrustrationSignal('esto no funciona')).toBe(true);
+    expect(isFrustrationSignal('me frustra')).toBe(true);
+  });
+
+  it('handles accent-stripped input', () => {
+    expect(isFrustrationSignal('estoy frustrado')).toBe(true);
+    expect(isFrustrationSignal('inútil')).toBe(true);
+  });
+
+  it('returns false for normal messages', () => {
+    expect(isFrustrationSignal('quiero pedir cita')).toBe(false);
+    expect(isFrustrationSignal('no gracias')).toBe(false);
+    expect(isFrustrationSignal('quiero hablar con una persona')).toBe(false);
   });
 });
 
