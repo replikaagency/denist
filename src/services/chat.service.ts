@@ -18,6 +18,7 @@ import { LIMITS } from '@/config/constants';
 import { log } from '@/lib/logger';
 
 import { enrichContact } from './contact.service';
+import { tryDeterministicIntakeCapture } from '@/lib/conversation/intake-capture';
 import { getContactById } from '@/lib/db/contacts';
 import {
   verifyOwnership,
@@ -135,6 +136,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   // Refresh so confirmation expiry and any later reads use DB truth (not stale pre-touch).
   conversation = await getConversationById(conversation_id);
 
+
   // 6. Load conversation state
   const state = await loadState(conversation_id);
 
@@ -171,6 +173,16 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   if (!preExistingRequest && state.completed) {
     state.completed = false;
   }
+
+  // INTAKE HARDENING: Deterministic field capture before LLM
+  const intakeResult = await tryDeterministicIntakeCapture({
+    state,
+    content,
+    conversation_id,
+    contact,
+    getConversationById,
+  });
+  if (intakeResult) return intakeResult;
 
   // 6.6. Explicit confirmation intercept.
   // When the previous turn set awaiting_confirmation=true we do NOT run a full
@@ -551,13 +563,22 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     }
   }
 
-  // Phase 3: LLM parse failure — insert a fallback message instead of throwing,
-  // so the patient message already persisted is not left orphaned.
+  // Phase 3: LLM parse failure — antifragile fallback: try deterministic intake guards
   if ('error' in turnResult) {
     log('error', 'chat.llm_parse_failure', {
       conversation_id,
       error: turnResult.error,
     });
+    // Try deterministic intake guards as antifragile fallback
+    const intakeResult = await tryDeterministicIntakeCapture({
+      state,
+      content,
+      conversation_id,
+      contact,
+      getConversationById,
+    });
+    if (intakeResult) return intakeResult;
+    // If not captured, fallback to generic parse error message
     const fallbackMessage = await insertMessage({
       conversation_id,
       role: 'ai',
