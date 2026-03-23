@@ -63,6 +63,10 @@ const EMAIL_FOLLOWUP_OPTIONS = [
   { label: 'Añadir correo', value: 'email_add_yes' },
   { label: 'No, gracias', value: 'email_add_no' },
 ];
+const QUICK_BOOKING_PATH_OPTIONS = [
+  { label: 'Elegir hora directamente', value: 'quick_path_direct' },
+  { label: 'Prefiero que recepción me contacte', value: 'quick_path_reception' },
+];
 
 
 export interface ChatTurnInput {
@@ -131,6 +135,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
 
   // 6. Load conversation state
   const state = await loadState(conversation_id);
+  hydrateStatePatientFromContact(state, contact);
 
   // 6.5. Sync appointment_request_open with DB reality BEFORE processTurn so
   // validateFlowAction inside the engine sees the correct flag.
@@ -175,6 +180,90 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     state.reschedule_phase === 'idle' &&
     !state.reschedule_target_id &&
     state.current_intent !== 'appointment_reschedule';
+  if (routedContent === 'quick_booking_fast' && canEnterQuickBooking) {
+    state.current_intent = 'appointment_request';
+    state.completed = false;
+    const selfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL?.trim() ?? '';
+    if (selfServiceUrl) {
+      const aiMessage = await insertMessage({
+        conversation_id,
+        role: 'ai',
+        content:
+          'Perfecto. Para ir lo más rápido posible, elige cómo prefieres continuar.',
+        metadata: {
+          type: 'quick_booking_path_choice',
+          options: QUICK_BOOKING_PATH_OPTIONS,
+        },
+      });
+      const finalConversation = await saveState(conversation_id, state);
+      return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+    }
+    const nextPrompt = getNextFieldPrompt('appointment_request', {
+      patient: state.patient,
+      appointment: state.appointment,
+      symptoms: state.symptoms,
+    });
+    if (nextPrompt?.prompt) {
+      const aiMessage = await insertMessage({
+        conversation_id,
+        role: 'ai',
+        content: nextPrompt.prompt,
+        metadata: buildGuidedFieldMetadata(nextPrompt.field),
+      });
+      const finalConversation = await saveState(conversation_id, state);
+      return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+    }
+  }
+  if (routedContent === 'quick_path_direct' && !state.awaiting_confirmation) {
+    const selfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL?.trim() ?? '';
+    if (selfServiceUrl) {
+      const aiMessage = await insertMessage({
+        conversation_id,
+        role: 'ai',
+        content:
+          `Perfecto. Aquí tienes el enlace para elegir hora directamente: ${selfServiceUrl}\n\nSi prefieres, también puedo seguir registrando tu solicitud para que recepción te contacte.`,
+        metadata: { type: 'quick_booking_direct_link' },
+      });
+      const finalConversation = await saveState(conversation_id, state);
+      return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+    }
+    state.current_intent = 'appointment_request';
+    state.completed = false;
+    const nextPrompt = getNextFieldPrompt('appointment_request', {
+      patient: state.patient,
+      appointment: state.appointment,
+      symptoms: state.symptoms,
+    });
+    if (nextPrompt?.prompt) {
+      const aiMessage = await insertMessage({
+        conversation_id,
+        role: 'ai',
+        content: nextPrompt.prompt,
+        metadata: buildGuidedFieldMetadata(nextPrompt.field),
+      });
+      const finalConversation = await saveState(conversation_id, state);
+      return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+    }
+  }
+  if (routedContent === 'quick_path_reception' && !state.awaiting_confirmation) {
+    state.current_intent = 'appointment_request';
+    state.completed = false;
+    const nextPrompt = getNextFieldPrompt('appointment_request', {
+      patient: state.patient,
+      appointment: state.appointment,
+      symptoms: state.symptoms,
+    });
+    if (nextPrompt?.prompt) {
+      const aiMessage = await insertMessage({
+        conversation_id,
+        role: 'ai',
+        content: nextPrompt.prompt,
+        metadata: buildGuidedFieldMetadata(nextPrompt.field),
+      });
+      const finalConversation = await saveState(conversation_id, state);
+      return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+    }
+  }
   if (isQuickBookingEntryIntent(routedContent) && canEnterQuickBooking) {
     state.current_intent = 'appointment_request';
     state.completed = false;
@@ -911,6 +1000,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       updatedContact = enriched;
       contact = enriched;
       effectiveContactId = enriched.id;
+      hydrateStatePatientFromContact(turnResult.state, updatedContact);
     }
   }
 
@@ -1241,6 +1331,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
           updatedContact = flushEnriched;
           contact = flushEnriched;
           effectiveContactId = flushEnriched.id;
+          hydrateStatePatientFromContact(turnResult.state, updatedContact);
         }
       }
       const flushLead = await ensureLead(effectiveContactId);
@@ -1403,6 +1494,22 @@ function isQuickBookingEntryIntent(text: string): boolean {
     t === 'quick_booking_fast' ||
     /\b(reservar cita|solicitar cita rapida|quiero reservar|quiero pedir cita)\b/.test(t)
   );
+}
+
+function hydrateStatePatientFromContact(
+  state: import('@/lib/conversation/schema').ConversationState,
+  contact: Contact,
+): void {
+  if (!state.patient.full_name) {
+    const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ').trim();
+    if (name) state.patient.full_name = name;
+  }
+  if (!state.patient.phone && contact.phone) {
+    state.patient.phone = contact.phone;
+  }
+  if (!state.patient.email && contact.email) {
+    state.patient.email = contact.email;
+  }
 }
 
 function mapGuidedChoiceToken(text: string): string {

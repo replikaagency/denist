@@ -737,6 +737,115 @@ describe('processChatMessage', () => {
     expect(callLLM).not.toHaveBeenCalled();
   });
 
+  it('shows fast booking path choice when self-service URL is configured', async () => {
+    const prevSelfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL;
+    process.env.BOOKING_SELF_SERVICE_URL = 'https://cal.example.com/book';
+    const state = createInitialState('conv1');
+    state.current_intent = null;
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'quick_booking_fast',
+    });
+
+    const quickChoiceInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_path_choice');
+    expect(quickChoiceInsert).toBeTruthy();
+    expect(quickChoiceInsert.metadata?.options).toEqual([
+      { label: 'Elegir hora directamente', value: 'quick_path_direct' },
+      { label: 'Prefiero que recepción me contacte', value: 'quick_path_reception' },
+    ]);
+    expect(callLLM).not.toHaveBeenCalled();
+    process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
+  });
+
+  it('routes fast booking directly to request capture when self-service URL is missing', async () => {
+    const prevSelfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL;
+    delete process.env.BOOKING_SELF_SERVICE_URL;
+    const state = createInitialState('conv1');
+    state.current_intent = null;
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+    getNextFieldPromptMock.mockReturnValue({
+      field: 'patient.new_or_returning',
+      prompt: '¿Es la primera vez que vienes a la clínica o ya eres paciente nuestro/a?',
+    });
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'quick_booking_fast',
+    });
+
+    const quickChoiceInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_path_choice');
+    expect(quickChoiceInsert).toBeFalsy();
+    const quickInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'patient_status_choice');
+    expect(quickInsert).toBeTruthy();
+    expect(callLLM).not.toHaveBeenCalled();
+    process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
+  });
+
+  it('hydrates patient identity from contact to avoid re-asking full_name/phone', async () => {
+    const state = createInitialState('conv1');
+    state.current_intent = null;
+    state.patient.full_name = null;
+    state.patient.phone = null;
+    state.patient.new_or_returning = null;
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+    getNextFieldPromptMock.mockImplementation((_intent, filledFields) => {
+      const patient = (filledFields as { patient: { full_name: string | null; phone: string | null } }).patient;
+      expect(patient.full_name).toBe('Ana');
+      expect(patient.phone).toBe('+34111222333');
+      return {
+        field: 'patient.new_or_returning',
+        prompt: '¿Es la primera vez que vienes a la clínica o ya eres paciente nuestro/a?',
+      };
+    });
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'quick_booking_start',
+    });
+
+    const quickInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'patient_status_choice');
+    expect(quickInsert).toBeTruthy();
+    expect(callLLM).not.toHaveBeenCalled();
+  });
+
+  it('routes quick_path_direct safely to request capture when self-service URL is missing', async () => {
+    const prevSelfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL;
+    delete process.env.BOOKING_SELF_SERVICE_URL;
+    const state = createInitialState('conv1');
+    state.current_intent = 'appointment_request';
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+    getNextFieldPromptMock.mockReturnValue({
+      field: 'patient.new_or_returning',
+      prompt: '¿Es la primera vez que vienes a la clínica o ya eres paciente nuestro/a?',
+    });
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'quick_path_direct',
+    });
+
+    const quickInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'patient_status_choice');
+    expect(quickInsert).toBeTruthy();
+    expect(callLLM).not.toHaveBeenCalled();
+    process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
+  });
+
   it('does not enter quick booking while reschedule flow is active', async () => {
     const state = createInitialState('conv1');
     state.current_intent = 'appointment_reschedule';

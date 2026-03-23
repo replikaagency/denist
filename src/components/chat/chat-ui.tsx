@@ -252,14 +252,15 @@ export function ChatUI() {
     ]);
   }, realtimeToken);
 
-  async function sendMessage(overrideContent?: string) {
-    const trimmed = (overrideContent ?? input).trim();
+  async function sendMessage(overrideContent?: string, displayContent?: string) {
+    const outboundContent = overrideContent ?? input;
+    const trimmed = outboundContent.trim();
     if (!trimmed || isChatBusy || !conversationId) return;
 
     const userMsg: Message = {
       id: crypto.randomUUID(),
       role: "user",
-      content: trimmed,
+      content: (displayContent ?? trimmed).trim(),
       timestamp: getTime(),
       animateEnter: true,
     };
@@ -447,6 +448,12 @@ export function ChatUI() {
               Array.isArray(msg.metadata?.options)
                 ? msg.metadata.options
                 : [];
+            const quickBookingPathOptions =
+              msg.role === "assistant" &&
+              msg.metadata?.type === "quick_booking_path_choice" &&
+              Array.isArray(msg.metadata?.options)
+                ? msg.metadata.options
+                : [];
             return (
               <div key={msg.id} className="flex flex-col gap-2">
                 <ChatMessage message={msg} reduceMotion={prefersReducedMotion} />
@@ -463,7 +470,7 @@ export function ChatUI() {
                         onClick={() => {
                           if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
                           optionClickLockRef.current = true;
-                          sendMessage(opt.value);
+                          sendMessage(opt.value, opt.label);
                         }}
                       >
                         {opt.label}
@@ -484,7 +491,7 @@ export function ChatUI() {
                         onClick={() => {
                           if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
                           optionClickLockRef.current = true;
-                          sendMessage(opt.value);
+                          sendMessage(opt.value, opt.label);
                         }}
                       >
                         {opt.label}
@@ -505,7 +512,7 @@ export function ChatUI() {
                         onClick={() => {
                           if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
                           optionClickLockRef.current = true;
-                          sendMessage(opt.value);
+                          sendMessage(opt.value, opt.label);
                         }}
                       >
                         {opt.label}
@@ -526,7 +533,7 @@ export function ChatUI() {
                         onClick={() => {
                           if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
                           optionClickLockRef.current = true;
-                          sendMessage(opt.value);
+                          sendMessage(opt.value, opt.label);
                         }}
                       >
                         {opt.label}
@@ -547,7 +554,7 @@ export function ChatUI() {
                         onClick={() => {
                           if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
                           optionClickLockRef.current = true;
-                          sendMessage(opt.value);
+                          sendMessage(opt.value, opt.label);
                         }}
                       >
                         {opt.label}
@@ -568,7 +575,28 @@ export function ChatUI() {
                         onClick={() => {
                           if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
                           optionClickLockRef.current = true;
-                          sendMessage(opt.value);
+                          sendMessage(opt.value, opt.label);
+                        }}
+                      >
+                        {opt.label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+                {quickBookingPathOptions.length > 0 && (
+                  <div className="ml-11 flex flex-wrap gap-2">
+                    {quickBookingPathOptions.map((opt) => (
+                      <Button
+                        key={`${msg.id}-${opt.value}`}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        disabled={isChatBusy || initializing || !conversationId || optionClickLockRef.current}
+                        onClick={() => {
+                          if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
+                          optionClickLockRef.current = true;
+                          sendMessage(opt.value, opt.label);
                         }}
                       >
                         {opt.label}
@@ -589,7 +617,7 @@ export function ChatUI() {
                         onClick={() => {
                           if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
                           optionClickLockRef.current = true;
-                          sendMessage(opt.value);
+                          sendMessage(opt.value, opt.label);
                         }}
                       >
                         {opt.label}
@@ -610,7 +638,7 @@ export function ChatUI() {
                         onClick={() => {
                           if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
                           optionClickLockRef.current = true;
-                          sendMessage(opt.value);
+                          sendMessage(opt.value, opt.label);
                         }}
                       >
                         {opt.label}
@@ -677,6 +705,7 @@ export function ChatUI() {
             const blockingTypes = new Set([
               "awaiting_confirmation",
               "optional_email_choice",
+              "quick_booking_path_choice",
               "correction_choice",
               "request_selection",
               "reschedule_target_locked",
@@ -700,7 +729,7 @@ export function ChatUI() {
                   onClick={() => {
                     if (isChatBusy || !conversationId || optionClickLockRef.current) return;
                     optionClickLockRef.current = true;
-                    sendMessage("quick_booking_start");
+                    sendMessage("quick_booking_start", "Reservar cita");
                   }}
                 >
                   Reservar cita
@@ -714,7 +743,7 @@ export function ChatUI() {
                   onClick={() => {
                     if (isChatBusy || !conversationId || optionClickLockRef.current) return;
                     optionClickLockRef.current = true;
-                    sendMessage("quick_booking_fast");
+                    sendMessage("quick_booking_fast", "Solicitar cita rápida");
                   }}
                 >
                   Solicitar cita rápida

@@ -4,6 +4,7 @@ import {
   detectCorrectionSignals,
   isFrustrationSignal,
   isPlainDecline,
+  mapCorrectionChoiceToken,
   normalizeConfirmationText,
 } from './confirmation';
 
@@ -114,5 +115,14 @@ describe('isPlainDecline', () => {
   it('is false when the patient asks for a person even if "no" appears', () => {
     expect(isPlainDecline('no, quiero hablar con una persona')).toBe(false);
     expect(isPlainDecline('no, ponme con una persona')).toBe(false);
+  });
+});
+
+describe('mapCorrectionChoiceToken', () => {
+  it('maps structured correction tokens deterministically', () => {
+    expect(mapCorrectionChoiceToken('change_date')).toBe('quiero cambiar la fecha');
+    expect(mapCorrectionChoiceToken('change_time')).toBe('quiero cambiar la hora');
+    expect(mapCorrectionChoiceToken('change_service')).toBe('quiero cambiar el servicio');
+    expect(mapCorrectionChoiceToken('texto libre')).toBe('texto libre');
   });
 });

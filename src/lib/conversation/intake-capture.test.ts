@@ -1,4 +1,4 @@
-import { expect, test, vi } from 'vitest';
+import { beforeEach, expect, test, vi } from 'vitest';
 import { tryDeterministicIntakeCapture } from './intake-capture';
 
 vi.mock('@/services/conversation.service', () => ({
@@ -8,6 +8,11 @@ vi.mock('@/services/conversation.service', () => ({
 vi.mock('@/lib/db/messages', () => ({
   insertMessage: vi.fn(async () => ({ id: 'm1' })),
 }));
+
+beforeEach(async () => {
+  const { insertMessage } = await import('@/lib/db/messages');
+  vi.mocked(insertMessage).mockClear();
+});
 
 const baseState = (intent = 'appointment_request') => ({
   current_intent: intent,
@@ -41,6 +46,12 @@ test('captura teléfono válido', async () => {
   });
   expect(result).not.toBeNull();
   expect(state.patient.phone).toBe('+34678123456');
+  const { insertMessage } = await import('@/lib/db/messages');
+  expect(vi.mocked(insertMessage)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      content: expect.stringContaining('¿Es la primera vez que vienes a la clínica o ya eres paciente nuestro/a?'),
+    }),
+  );
 });
 
 test('captura email válido', async () => {
@@ -73,6 +84,13 @@ test('captura new_or_returning con sí', async () => {
   });
   expect(result).not.toBeNull();
   expect(state.patient.new_or_returning).toBe('new');
+  const { insertMessage } = await import('@/lib/db/messages');
+  expect(vi.mocked(insertMessage)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      content: expect.stringContaining('¿Para qué tipo de tratamiento quieres la cita? ¿Una limpieza, revisión, o algo distinto?'),
+      metadata: expect.objectContaining({ field: 'new_or_returning' }),
+    }),
+  );
 });
 
 test('captura new_or_returning con no', async () => {
@@ -89,6 +107,49 @@ test('captura new_or_returning con no', async () => {
   });
   expect(result).not.toBeNull();
   expect(state.patient.new_or_returning).toBe('returning');
+  const { insertMessage } = await import('@/lib/db/messages');
+  expect(vi.mocked(insertMessage)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      content: expect.stringContaining('¿Para qué tipo de tratamiento quieres la cita? ¿Una limpieza, revisión, o algo distinto?'),
+      metadata: expect.objectContaining({ field: 'new_or_returning' }),
+    }),
+  );
+});
+
+test('captura preferred_time con botón mañana', async () => {
+  const state = baseState();
+  state.patient.full_name = 'Juan Pérez';
+  state.patient.phone = '678123456';
+  state.patient.new_or_returning = 'new';
+  state.appointment.service_type = 'limpieza';
+  state.appointment.preferred_date = 'martes';
+  const result = await tryDeterministicIntakeCapture({
+    state,
+    content: 'time_morning',
+    conversation_id: 'cid',
+    contact: {},
+    getConversationById: async () => ({}),
+  });
+  expect(result).not.toBeNull();
+  expect(state.appointment.preferred_time).toBe('morning');
+});
+
+test('captura preferred_time manual con "a las X"', async () => {
+  const state = baseState();
+  state.patient.full_name = 'Juan Pérez';
+  state.patient.phone = '678123456';
+  state.patient.new_or_returning = 'new';
+  state.appointment.service_type = 'limpieza';
+  state.appointment.preferred_date = 'martes';
+  const result = await tryDeterministicIntakeCapture({
+    state,
+    content: 'a las 18:00',
+    conversation_id: 'cid',
+    contact: {},
+    getConversationById: async () => ({}),
+  });
+  expect(result).not.toBeNull();
+  expect(state.appointment.preferred_time).toBe('a las 18:00');
 });
 
 test('no captura si input inválido', async () => {
@@ -101,4 +162,50 @@ test('no captura si input inválido', async () => {
     getConversationById: async () => ({}),
   });
   expect(result).toBeNull();
+});
+
+test('booking shortcut captura varios datos y avanza al siguiente faltante', async () => {
+  const state = baseState();
+  state.patient.full_name = 'Juan Pérez';
+  state.patient.phone = '+34678123456';
+  const result = await tryDeterministicIntakeCapture({
+    state,
+    content: 'quiero una limpieza mañana por la tarde',
+    conversation_id: 'cid',
+    contact: {},
+    getConversationById: async () => ({}),
+  });
+  expect(result).not.toBeNull();
+  expect(state.appointment.service_type).toBe('limpieza');
+  expect(state.appointment.preferred_date).toBe('mañana');
+  expect(state.appointment.preferred_time).toBe('afternoon');
+  const { insertMessage } = await import('@/lib/db/messages');
+  expect(vi.mocked(insertMessage)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      content: expect.stringContaining('¿Es la primera vez que vienes a la clínica o ya eres paciente nuestro/a?'),
+    }),
+  );
+});
+
+test('booking shortcut captura nombre+telefono+servicio y responde duda breve', async () => {
+  const state = baseState();
+  const result = await tryDeterministicIntakeCapture({
+    state,
+    content: 'soy Oliver Garcia, 666666666, limpieza mañana por la tarde, ¿cuánto cuesta?',
+    conversation_id: 'cid',
+    contact: {},
+    getConversationById: async () => ({}),
+  });
+  expect(result).not.toBeNull();
+  expect(state.patient.full_name).toBe('Oliver Garcia');
+  expect(state.patient.phone).toBe('+34666666666');
+  expect(state.appointment.service_type).toBe('limpieza');
+  expect(state.appointment.preferred_date).toBe('mañana');
+  expect(state.appointment.preferred_time).toBe('afternoon');
+  const { insertMessage } = await import('@/lib/db/messages');
+  expect(vi.mocked(insertMessage)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      content: expect.stringContaining('Sobre precio, te lo confirma recepción según valoración.'),
+    }),
+  );
 });

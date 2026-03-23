@@ -184,7 +184,7 @@ function buildCompletionSummary(state: ConversationState): string {
   else if (timeLabel)    parts.push(`por la ${timeLabel}`);
 
   const summary = parts.length > 0 ? `Te lo dejo anotado: ${parts.join(", ")}. ` : "";
-  return `${summary}El equipo se pondrá en contacto contigo para confirmar la disponibilidad. ¿Hay algo más en lo que pueda ayudarte?`;
+  return `${summary}El equipo se pondrá en contacto contigo para confirmar la disponibilidad. Si quieres, te dejo ya registrada la solicitud.`;
 }
 
 /**

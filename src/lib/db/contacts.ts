@@ -36,12 +36,26 @@ export async function createContact(insert: {
   insurance_provider?: string | null;
   metadata?: Record<string, unknown>;
 }): Promise<Contact> {
+  const normalizedEmail = insert.email ? insert.email.toLowerCase().trim() : null;
+  const normalizedPhone = insert.phone ? normalizePhone(insert.phone) : null;
+  if (normalizedPhone) {
+    const existingByPhone = await findContactByPhone(normalizedPhone);
+    if (existingByPhone) return existingByPhone;
+  }
+  if (normalizedEmail) {
+    const existingByEmail = await findContactByEmail(normalizedEmail);
+    if (existingByEmail) return existingByEmail;
+  }
+
   const { data, error } = await db()
     .from('contacts')
     .insert({
       is_new_patient: true,
       metadata: {},
       ...insert,
+      email: normalizedEmail,
+      phone: normalizedPhone,
+      phone_normalized: normalizedPhone,
     })
     .select('*')
     .single();
@@ -58,9 +72,19 @@ export async function updateContact(
   id: string,
   patch: Partial<Omit<Contact, 'id' | 'created_at' | 'updated_at'>>,
 ): Promise<Contact> {
+  const normalizedPatch: Partial<Omit<Contact, 'id' | 'created_at' | 'updated_at'>> = { ...patch };
+  if (typeof normalizedPatch.email === 'string') {
+    normalizedPatch.email = normalizedPatch.email.toLowerCase().trim();
+  }
+  if (typeof normalizedPatch.phone === 'string') {
+    normalizedPatch.phone = normalizePhone(normalizedPatch.phone);
+    (normalizedPatch as Record<string, unknown>).phone_normalized = normalizedPatch.phone;
+  } else if (normalizedPatch.phone === null) {
+    (normalizedPatch as Record<string, unknown>).phone_normalized = null;
+  }
   const { data, error } = await db()
     .from('contacts')
-    .update(patch)
+    .update(normalizedPatch)
     .eq('id', id)
     .select('*')
     .single();
@@ -75,10 +99,11 @@ export async function updateContact(
  * Used for channel-based contact resolution (WhatsApp, SMS).
  */
 export async function findContactByPhone(phone: string): Promise<Contact | null> {
+  const normalized = normalizePhone(phone);
   const { data, error } = await db()
     .from('contacts')
     .select('*')
-    .eq('phone', normalizePhone(phone))
+    .eq('phone_normalized', normalized)
     .maybeSingle();
 
   if (error) throw AppError.database('Failed to look up contact by phone', error);
@@ -122,10 +147,11 @@ export async function findContactByEmailOrPhone(
   }
 
   if (phone) {
+    const normalizedPhone = normalizePhone(phone);
     const { data, error } = await supabase
       .from('contacts')
       .select('*')
-      .eq('phone', normalizePhone(phone))
+      .eq('phone_normalized', normalizedPhone)
       .maybeSingle();
     if (error) throw AppError.database('Failed to look up contact by phone', error);
     if (data) return data as Contact;

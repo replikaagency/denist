@@ -41,7 +41,7 @@ const COMMON_PROMPTS: Record<string, string> = {
   "patient.phone":
     "¿A qué número te podemos llamar?",
   "patient.email":
-    "¿Tienes un correo electrónico donde mandarte la confirmación?",
+    "Si quieres, también puedo añadir un correo para enviarte el resumen.",
   "patient.date_of_birth":
     "¿Y tu fecha de nacimiento? La necesitamos para localizar tu ficha.",
   "patient.new_or_returning":

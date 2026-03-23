@@ -4,6 +4,8 @@ import {
   extractEmailGuard,
   extractNameGuard,
   extractNewOrReturningGuard,
+  extractTimePreferenceGuard,
+  extractFastBookingDetails,
 } from './intake-guards';
 
 // ---------------------------------------------------------------------------
@@ -64,17 +66,88 @@ describe('extractNameGuard', () => {
 describe('extractNewOrReturningGuard', () => {
   it('detects new: primera vez', () =>
     expect(extractNewOrReturningGuard('es mi primera vez')).toBe('new'));
+  it('detects new: es la primera vez', () =>
+    expect(extractNewOrReturningGuard('es la primera vez')).toBe('new'));
   it('detects new: soy nuevo', () =>
     expect(extractNewOrReturningGuard('soy nuevo')).toBe('new'));
-  it('detects new: nunca he venido', () =>
-    expect(extractNewOrReturningGuard('nunca he venido antes')).toBe('new'));
+  it('detects new: nunca he ido', () =>
+    expect(extractNewOrReturningGuard('nunca he ido')).toBe('new'));
+  it('detects returning: ya he ido', () =>
+    expect(extractNewOrReturningGuard('ya he ido')).toBe('returning'));
+  it('detects returning: ya fui', () =>
+    expect(extractNewOrReturningGuard('ya fui')).toBe('returning'));
+  it('detects returning: he ido antes', () =>
+    expect(extractNewOrReturningGuard('he ido antes')).toBe('returning'));
   it('detects returning: ya soy paciente', () =>
     expect(extractNewOrReturningGuard('ya soy paciente vuestro')).toBe('returning'));
-  it('detects returning: tengo ficha', () =>
-    expect(extractNewOrReturningGuard('ya tengo ficha allí')).toBe('returning'));
+  it('maps button token new', () =>
+    expect(extractNewOrReturningGuard('patient_status_new')).toBe('new'));
+  it('maps button token returning', () =>
+    expect(extractNewOrReturningGuard('patient_status_returning')).toBe('returning'));
   it('null for bare sí (ambiguous)', () => expect(extractNewOrReturningGuard('sí')).toBeNull());
   it('null for unrelated message', () =>
     expect(extractNewOrReturningGuard('quiero una limpieza')).toBeNull());
+});
+
+// ---------------------------------------------------------------------------
+// Time preference
+// ---------------------------------------------------------------------------
+describe('extractTimePreferenceGuard', () => {
+  it('maps button token morning', () =>
+    expect(extractTimePreferenceGuard('time_morning')).toEqual({ kind: 'value', value: 'morning' }));
+  it('maps button token afternoon', () =>
+    expect(extractTimePreferenceGuard('time_afternoon')).toEqual({ kind: 'value', value: 'afternoon' }));
+  it('maps button token exact', () =>
+    expect(extractTimePreferenceGuard('time_exact')).toEqual({ kind: 'ask_exact' }));
+  it('detects manual mañana', () =>
+    expect(extractTimePreferenceGuard('por la mañana')).toEqual({ kind: 'value', value: 'morning' }));
+  it('detects manual tarde', () =>
+    expect(extractTimePreferenceGuard('por la tarde')).toEqual({ kind: 'value', value: 'afternoon' }));
+  it('detects exact hour text', () =>
+    expect(extractTimePreferenceGuard('a las 10:30')).toEqual({ kind: 'value', value: 'a las 10:30' }));
+  it('detects exact hour with "sobre las"', () =>
+    expect(extractTimePreferenceGuard('sobre las 17')).toEqual({ kind: 'value', value: 'a las 17' }));
+  it('handles shorthand "mañana tarde" as afternoon preference', () =>
+    expect(extractTimePreferenceGuard('mañana tarde')).toEqual({ kind: 'value', value: 'afternoon' }));
+});
+
+describe('extractFastBookingDetails', () => {
+  it('captures service + date + time in one message', () => {
+    expect(extractFastBookingDetails('quiero una limpieza mañana por la tarde')).toMatchObject({
+      service_type: 'limpieza',
+      preferred_date: 'mañana',
+      preferred_time: 'afternoon',
+    });
+  });
+
+  it('captures service + weekday + exact time', () => {
+    expect(extractFastBookingDetails('me gustaría revisión el martes a las 10')).toMatchObject({
+      service_type: 'revisión',
+      preferred_date: 'martes',
+      preferred_time: 'a las 10',
+    });
+  });
+
+  it('captures relative week date token', () => {
+    expect(extractFastBookingDetails('esta semana me viene bien')).toMatchObject({
+      preferred_date: 'esta semana',
+    });
+  });
+
+  it('captures abbreviated relative week token', () => {
+    expect(extractFastBookingDetails('esta sem me viene bien')).toMatchObject({
+      preferred_date: 'esta semana',
+    });
+  });
+
+  it('captures embedded identity plus booking data safely', () => {
+    expect(extractFastBookingDetails('soy Oliver Garcia, 666666666, limpieza mañana')).toMatchObject({
+      full_name: 'Oliver Garcia',
+      phone: '+34666666666',
+      service_type: 'limpieza',
+      preferred_date: 'mañana',
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
