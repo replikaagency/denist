@@ -399,18 +399,207 @@ export function ChatUI() {
           )}
 
           {messages.map((msg) => {
-            const options =
+            const confirmationOptions =
               msg.role === "assistant" &&
               msg.metadata?.type === "awaiting_confirmation" &&
+              Array.isArray(msg.metadata?.options)
+                ? msg.metadata.options
+                : [];
+            const patientStatusOptions =
+              msg.role === "assistant" &&
+              msg.metadata?.type === "patient_status_choice" &&
+              Array.isArray(msg.metadata?.options)
+                ? msg.metadata.options
+                : [];
+            const timePreferenceOptions =
+              msg.role === "assistant" &&
+              msg.metadata?.type === "time_preference_choice" &&
+              Array.isArray(msg.metadata?.options)
+                ? msg.metadata.options
+                : [];
+            const requestSelectionOptions =
+              msg.role === "assistant" &&
+              msg.metadata?.type === "request_selection" &&
+              Array.isArray(msg.metadata?.options)
+                ? msg.metadata.options
+                : [];
+            const correctionChoiceOptions =
+              msg.role === "assistant" &&
+              msg.metadata?.type === "correction_choice" &&
+              Array.isArray(msg.metadata?.options)
+                ? msg.metadata.options
+                : [];
+            const serviceFallbackOptions =
+              msg.role === "assistant" &&
+              msg.metadata?.type === "service_choice_fallback" &&
+              Array.isArray(msg.metadata?.options)
+                ? msg.metadata.options
+                : [];
+            const dateFallbackOptions =
+              msg.role === "assistant" &&
+              msg.metadata?.type === "date_choice_fallback" &&
+              Array.isArray(msg.metadata?.options)
+                ? msg.metadata.options
+                : [];
+            const emailFollowupOptions =
+              msg.role === "assistant" &&
+              msg.metadata?.type === "optional_email_choice" &&
               Array.isArray(msg.metadata?.options)
                 ? msg.metadata.options
                 : [];
             return (
               <div key={msg.id} className="flex flex-col gap-2">
                 <ChatMessage message={msg} reduceMotion={prefersReducedMotion} />
-                {options.length > 0 && (
+                {confirmationOptions.length > 0 && (
                   <div className="ml-11 flex flex-wrap gap-2">
-                    {options.map((opt) => (
+                    {confirmationOptions.map((opt) => (
+                      <Button
+                        key={`${msg.id}-${opt.value}`}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        disabled={isChatBusy || initializing || !conversationId || optionClickLockRef.current}
+                        onClick={() => {
+                          if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
+                          optionClickLockRef.current = true;
+                          sendMessage(opt.value);
+                        }}
+                      >
+                        {opt.label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+                {patientStatusOptions.length > 0 && (
+                  <div className="ml-11 flex flex-wrap gap-2">
+                    {patientStatusOptions.map((opt) => (
+                      <Button
+                        key={`${msg.id}-${opt.value}`}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        disabled={isChatBusy || initializing || !conversationId || optionClickLockRef.current}
+                        onClick={() => {
+                          if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
+                          optionClickLockRef.current = true;
+                          sendMessage(opt.value);
+                        }}
+                      >
+                        {opt.label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+                {timePreferenceOptions.length > 0 && (
+                  <div className="ml-11 flex flex-wrap gap-2">
+                    {timePreferenceOptions.map((opt) => (
+                      <Button
+                        key={`${msg.id}-${opt.value}`}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        disabled={isChatBusy || initializing || !conversationId || optionClickLockRef.current}
+                        onClick={() => {
+                          if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
+                          optionClickLockRef.current = true;
+                          sendMessage(opt.value);
+                        }}
+                      >
+                        {opt.label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+                {requestSelectionOptions.length > 0 && (
+                  <div className="ml-11 flex flex-wrap gap-2">
+                    {requestSelectionOptions.map((opt) => (
+                      <Button
+                        key={`${msg.id}-${opt.value}`}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        disabled={isChatBusy || initializing || !conversationId || optionClickLockRef.current}
+                        onClick={() => {
+                          if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
+                          optionClickLockRef.current = true;
+                          sendMessage(opt.value);
+                        }}
+                      >
+                        {opt.label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+                {correctionChoiceOptions.length > 0 && (
+                  <div className="ml-11 flex flex-wrap gap-2">
+                    {correctionChoiceOptions.map((opt) => (
+                      <Button
+                        key={`${msg.id}-${opt.value}`}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        disabled={isChatBusy || initializing || !conversationId || optionClickLockRef.current}
+                        onClick={() => {
+                          if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
+                          optionClickLockRef.current = true;
+                          sendMessage(opt.value);
+                        }}
+                      >
+                        {opt.label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+                {emailFollowupOptions.length > 0 && (
+                  <div className="ml-11 flex flex-wrap gap-2">
+                    {emailFollowupOptions.map((opt) => (
+                      <Button
+                        key={`${msg.id}-${opt.value}`}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        disabled={isChatBusy || initializing || !conversationId || optionClickLockRef.current}
+                        onClick={() => {
+                          if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
+                          optionClickLockRef.current = true;
+                          sendMessage(opt.value);
+                        }}
+                      >
+                        {opt.label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+                {serviceFallbackOptions.length > 0 && (
+                  <div className="ml-11 flex flex-wrap gap-2">
+                    {serviceFallbackOptions.map((opt) => (
+                      <Button
+                        key={`${msg.id}-${opt.value}`}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        disabled={isChatBusy || initializing || !conversationId || optionClickLockRef.current}
+                        onClick={() => {
+                          if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
+                          optionClickLockRef.current = true;
+                          sendMessage(opt.value);
+                        }}
+                      >
+                        {opt.label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+                {dateFallbackOptions.length > 0 && (
+                  <div className="ml-11 flex flex-wrap gap-2">
+                    {dateFallbackOptions.map((opt) => (
                       <Button
                         key={`${msg.id}-${opt.value}`}
                         type="button"
@@ -483,6 +672,55 @@ export function ChatUI() {
         </CardFooter>
       ) : (
         <CardFooter className="border-t px-4 py-3">
+          {(() => {
+            const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+            const blockingTypes = new Set([
+              "awaiting_confirmation",
+              "optional_email_choice",
+              "correction_choice",
+              "request_selection",
+              "reschedule_target_locked",
+              "reschedule_selection_retry",
+              "reschedule_selection_out_of_range",
+              "reschedule_aborted",
+              "email_followup_skipped",
+              "appointment_confirmed",
+              "reschedule_confirmed",
+            ]);
+            const isBlocked = !!lastAssistant?.metadata?.type && blockingTypes.has(lastAssistant.metadata.type);
+            return !initializing && !!conversationId && !isHandedOff && !isBlocked;
+          })() && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className="h-8 text-xs"
+                  disabled={isChatBusy || !conversationId || optionClickLockRef.current}
+                  onClick={() => {
+                    if (isChatBusy || !conversationId || optionClickLockRef.current) return;
+                    optionClickLockRef.current = true;
+                    sendMessage("quick_booking_start");
+                  }}
+                >
+                  Reservar cita
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-8 text-xs"
+                  disabled={isChatBusy || !conversationId || optionClickLockRef.current}
+                  onClick={() => {
+                    if (isChatBusy || !conversationId || optionClickLockRef.current) return;
+                    optionClickLockRef.current = true;
+                    sendMessage("quick_booking_fast");
+                  }}
+                >
+                  Solicitar cita rápida
+                </Button>
+              </div>
+            )}
           <form
             className="flex w-full items-center gap-2"
             aria-busy={isChatBusy}
