@@ -5,6 +5,7 @@ import {
   updateConversation,
   touchConversation,
 } from '@/lib/db/conversations';
+import { getContactById } from '@/lib/db/contacts';
 import { getRecentMessages } from '@/lib/db/messages';
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 import {
@@ -36,16 +37,50 @@ export async function loadState(conversationId: string): Promise<ConversationSta
 
 /**
  * Persist the updated conversation state back to the metadata column.
+ * Returns the updated Conversation so callers can avoid a redundant read.
  */
 export async function saveState(
   conversationId: string,
   state: ConversationState,
-): Promise<void> {
+): Promise<Conversation> {
   const conversation = await getConversationById(conversationId);
   const existingMetadata = (conversation.metadata ?? {}) as Record<string, unknown>;
 
-  await updateConversation(conversationId, {
+  return updateConversation(conversationId, {
     metadata: { ...existingMetadata, conversation_state: state },
+  });
+}
+
+/**
+ * Keeps the appointment_request_open flag in conversation state in sync with
+ * DB reality after an appointment_requests status change (e.g. staff PATCH).
+ *
+ * Performs exactly one read + one conditional write. Does NOT use
+ * loadState/saveState to avoid a double getConversationById call.
+ * Merges safely: all existing metadata keys and all other conversation_state
+ * fields are preserved — only appointment_request_open is touched.
+ *
+ * No-ops silently when conversationId is null (appointments with no linked
+ * conversation) or when the flag is already correct.
+ */
+export async function syncAppointmentRequestFlag(
+  conversationId: string | null | undefined,
+  isOpen: boolean,
+): Promise<void> {
+  if (!conversationId) return;
+
+  const conversation = await getConversationById(conversationId);
+  const existingMetadata = (conversation.metadata ?? {}) as Record<string, unknown>;
+  const rawState = (existingMetadata.conversation_state ?? {}) as Record<string, unknown>;
+
+  // Already in sync — skip the write.
+  if (!!rawState.appointment_request_open === isOpen) return;
+
+  await updateConversation(conversationId, {
+    metadata: {
+      ...existingMetadata,
+      conversation_state: { ...rawState, appointment_request_open: isOpen },
+    },
   });
 }
 
@@ -98,13 +133,20 @@ export async function startOrResumeConversation(contactId: string): Promise<{
 }
 
 /**
- * Verify a conversation belongs to a given contact (session auth).
+ * Verify the requester owns this conversation: load conversation (source of truth
+ * for contact_id), then require that contact's session_token matches the token
+ * from the browser (survives contact merge / relink).
  */
 export async function verifyOwnership(
   conversationId: string,
-  contactId: string,
+  sessionToken: string,
 ): Promise<Conversation> {
-  return getConversationForContact(conversationId, contactId);
+  const conversation = await getConversationById(conversationId);
+  const owner = await getContactById(conversation.contact_id);
+  if (owner.session_token !== sessionToken) {
+    throw AppError.notFound('Conversation', conversationId);
+  }
+  return conversation;
 }
 
 /**

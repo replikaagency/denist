@@ -13,7 +13,7 @@ const LeadStatusSchema = z.enum([
 export const LeadUpdateSchema = z.object({
   status: LeadStatusSchema.optional(),
   source: z.string().trim().max(100).optional(),
-  treatment_interest: z.array(z.string().trim().max(100)).optional(),
+  treatment_interest: z.array(z.string().trim().max(100)).max(50).optional(),
   notes: z.string().trim().max(5000).optional(),
   assigned_to: z.string().uuid().nullable().optional(),
 });

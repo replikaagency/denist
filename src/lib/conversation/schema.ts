@@ -59,6 +59,57 @@ export const SymptomSchema = z.object({
 export type SymptomReport = z.infer<typeof SymptomSchema>;
 
 // ---------------------------------------------------------------------------
+// Correction intent — controlled field overwrites
+// ---------------------------------------------------------------------------
+
+// Un-namespaced field names accepted from the LLM (appointment + symptom fields only).
+// Patient identity fields are intentionally excluded — they are never correctable
+// via this mechanism.
+export const CorrectionFieldEnum = z.enum([
+  // appointment sub-object
+  'service_type',
+  'preferred_date',
+  'preferred_time',
+  'preferred_provider',
+  'flexibility',
+  // symptoms sub-object
+  'description',
+  'location',
+  'duration',
+  'pain_level',
+  'triggers',
+  'prior_treatment',
+]);
+
+export type CorrectionField = z.infer<typeof CorrectionFieldEnum>;
+
+// Namespaced field names written to the audit log (domain.field format).
+export const CorrectionLogFieldEnum = z.enum([
+  'appointment.service_type',
+  'appointment.preferred_date',
+  'appointment.preferred_time',
+  'appointment.preferred_provider',
+  'appointment.flexibility',
+  'symptoms.description',
+  'symptoms.location',
+  'symptoms.duration',
+  'symptoms.pain_level',
+  'symptoms.triggers',
+  'symptoms.prior_treatment',
+]);
+
+export type CorrectionLogField = z.infer<typeof CorrectionLogFieldEnum>;
+
+const CorrectionLogEntrySchema = z.object({
+  field:     CorrectionLogFieldEnum,
+  old_value: z.unknown(),
+  new_value: z.unknown(),
+  timestamp: z.string(),  // ISO 8601
+});
+
+export type CorrectionLogEntry = z.infer<typeof CorrectionLogEntrySchema>;
+
+// ---------------------------------------------------------------------------
 // Next action the engine should take
 // ---------------------------------------------------------------------------
 
@@ -74,6 +125,36 @@ export const NextActionEnum = z.enum([
 ]);
 
 export type NextAction = z.infer<typeof NextActionEnum>;
+
+// ---------------------------------------------------------------------------
+// Optional hybrid booking signals (LLM — backward compatible when omitted)
+// ---------------------------------------------------------------------------
+
+/** Coerce a single string from the model into a one-element array (common LLM mistake). */
+function coerceHybridStringArray(val: unknown): unknown {
+  if (val === null || val === undefined) return undefined;
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string' && val.trim()) return [val.trim()];
+  return undefined;
+}
+
+/** Fields inside LLM `hybrid_booking` (may be null or omitted). */
+export const HybridBookingFieldsSchema = z.object({
+  booking_mode: z
+    .enum(['direct_link', 'callback_request', 'availability_capture'])
+    .nullable()
+    .optional(),
+  service_interest: z.string().nullable().optional(),
+  preferred_days: z.preprocess(coerceHybridStringArray, z.array(z.string()).optional()),
+  preferred_time_ranges: z.preprocess(coerceHybridStringArray, z.array(z.string()).optional()),
+  availability_notes: z.string().nullable().optional(),
+  wants_callback: z.boolean().optional(),
+  patient_chose_direct_link: z.boolean().optional(),
+  patient_declined_direct_link: z.boolean().optional(),
+  assistant_should_offer_choice: z.boolean().optional(),
+});
+
+export type HybridBookingSignal = z.infer<typeof HybridBookingFieldsSchema>;
 
 // ---------------------------------------------------------------------------
 // The full LLM turn output
@@ -103,6 +184,33 @@ export const LLMTurnOutputSchema = z.object({
   // ── Safety flags ────────────────────────────────────────────────────────
   contains_diagnosis: z.boolean().describe("True if the reply accidentally contains a clinical diagnosis — triggers a rewrite"),
   contains_pricing:   z.boolean().describe("True if the reply states a specific price — triggers a rewrite"),
+
+  // ── Correction intent ────────────────────────────────────────────────────
+  is_correction: z.boolean()
+    .describe(
+      "Set true ONLY when the patient explicitly retracts a previously stated value. " +
+      "Required trigger signals: 'no wait', 'mejor', 'I meant', 'actually', 'no, not that'. " +
+      "Do NOT set true for a first mention of a field, a clarification, or adding new info. " +
+      "Must be false if correction_fields is empty."
+    ),
+  correction_fields: z.array(CorrectionFieldEnum)
+    .describe(
+      "Which field names the patient is correcting this turn. " +
+      "Must be empty when is_correction is false. " +
+      "Only appointment and symptom fields are valid — patient identity fields cannot be corrected via this mechanism."
+    ),
+
+  hybrid_booking: HybridBookingFieldsSchema.nullish().describe(
+    "Optional hybrid intake: offer direct link vs callback, or capture structured availability. Omit or null if not applicable.",
+  ),
+}).superRefine((data, ctx) => {
+  if (!data.is_correction && data.correction_fields.length > 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ['correction_fields'],
+      message: 'correction_fields must be empty when is_correction is false',
+    });
+  }
 });
 
 export type LLMTurnOutput = z.infer<typeof LLMTurnOutputSchema>;
@@ -128,6 +236,59 @@ export const ConversationStateSchema = z.object({
   // created on a later turn. Uses .default(false) so existing DB records that
   // predate this field parse correctly without migration.
   offer_appointment_pending: z.boolean().default(false),
+  // Set to true when an open appointment request exists for this conversation.
+  // Synced from DB in chat.service before processTurn so validateFlowAction
+  // can block redundant offer_appointment actions without a DB call.
+  appointment_request_open: z.boolean().default(false),
+  // ── Reschedule flow ──────────────────────────────────────────────────────
+  // Tracks which existing appointment_request the patient wants to change.
+  // Cleared after reschedule completes or the patient abandons the flow.
+  //
+  // reschedule_phase:
+  //   'idle'                — not rescheduling
+  //   'selecting_target'    — 2+ open requests; waiting for patient to pick one
+  //   'collecting_new_details' — target locked; LLM gathering new date/time/service
+  //
+  // All three use .default() so existing DB records parse without a migration.
+  reschedule_target_id: z.string().nullable().default(null),
+  reschedule_target_summary: z.string().nullable().default(null),
+  reschedule_phase: z.enum(['idle', 'selecting_target', 'collecting_new_details']).default('idle'),
+
+  // Explicit confirmation flow — patient must say "sí" before any appointment
+  // row is created. Set to true when all required fields are filled but the
+  // DB row has not yet been written. Cleared once the patient confirms (row
+  // created) or declines (state reset). Uses .default(false) / .default(null)
+  // / .default(0) so existing DB records parse without a migration.
+  awaiting_confirmation: z.boolean().default(false),
+  pending_appointment: AppointmentSchema.nullable().default(null),
+  confirmation_attempts: z.number().default(0),
+  /** ISO 8601 — set when awaiting_confirmation becomes true; used for 30min expiry (not last_message_at). */
+  confirmation_prompt_at: z.string().nullable().default(null),
+  // True when an active hybrid_bookings row exists for this conversation (synced from DB each turn).
+  hybrid_booking_open: z.boolean().default(false),
+  // True after the two-way self-service vs manual booking offer was appended to a reply (no DB row).
+  self_service_booking_offer_shown: z.boolean().default(false),
+  // Audit and operational metadata. Uses .loose() so unknown keys present in
+  // existing DB records are preserved on parse/re-save without a migration.
+  // correction_log is expected to remain small (single-digit entries per
+  // conversation). Derived metrics (correction_count, last_correction_at,
+  // too_many_corrections) are computed at write time in applyValidatedCorrections
+  // so they are always consistent with correction_log and available to any
+  // reader without recomputation.
+  metadata: z
+    .object({
+      correction_log:       z.array(CorrectionLogEntrySchema).default([]),
+      correction_count:     z.number().default(0),
+      last_correction_at:   z.string().nullable().default(null),
+      too_many_corrections: z.boolean().default(false),
+    })
+    .loose()
+    .default({
+      correction_log:       [],
+      correction_count:     0,
+      last_correction_at:   null,
+      too_many_corrections: false,
+    }),
 });
 
 export type ConversationState = z.infer<typeof ConversationStateSchema>;
@@ -171,5 +332,16 @@ export function createInitialState(conversationId: string): ConversationState {
     consecutive_low_confidence: 0,
     completed: false,
     offer_appointment_pending: false,
+    appointment_request_open: false,
+    reschedule_target_id: null,
+    reschedule_target_summary: null,
+    reschedule_phase: 'idle',
+    awaiting_confirmation: false,
+    pending_appointment: null,
+    confirmation_attempts: 0,
+    confirmation_prompt_at: null,
+    hybrid_booking_open: false,
+    self_service_booking_offer_shown: false,
+    metadata: { correction_log: [], correction_count: 0, last_correction_at: null, too_many_corrections: false },
   };
 }

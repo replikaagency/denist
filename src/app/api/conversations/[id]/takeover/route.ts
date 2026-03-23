@@ -34,7 +34,7 @@ export async function POST(_request: NextRequest, { params }: RouteParams) {
     await insertMessage({
       conversation_id: id,
       role: 'system',
-      content: 'A staff member has joined the conversation.',
+      content: 'Un miembro del equipo se ha unido a la conversación.',
       metadata: {
         type: 'takeover',
         staff_user_id: auth.user.id,

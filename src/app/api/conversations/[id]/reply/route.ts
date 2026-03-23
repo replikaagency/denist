@@ -31,26 +31,27 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     const conversation = await getConversationById(id);
 
-    // Only allow replies to conversations that are waiting for or actively handled by staff
-    if (conversation.status !== 'waiting_human' && conversation.status !== 'human_active') {
+    // Block only fully closed conversations — staff can proactively join any
+    // active conversation, not just escalated ones.
+    if (conversation.status === 'resolved' || conversation.status === 'abandoned') {
       return errorResponse(
         'CONFLICT',
-        'Can only reply to conversations in waiting_human or human_active status.',
+        'Cannot reply to a closed conversation.',
         409,
       );
     }
 
-    // If this is the first staff reply, claim the conversation:
+    // If this is the first staff reply (conversation not yet human_active), claim it:
     // transition to human_active, disable AI, insert a join notification, and
-    // assign the open handoff — mirroring the explicit takeover flow.
+    // assign the open handoff if one exists (escalated path) or skip it (proactive path).
     let systemMessage = null;
-    if (conversation.status === 'waiting_human') {
+    if (conversation.status === 'waiting_human' || conversation.status === 'active') {
       await updateConversation(id, { status: 'human_active', ai_enabled: false });
 
       systemMessage = await insertMessage({
         conversation_id: id,
         role: 'system',
-        content: 'A staff member has joined the conversation.',
+        content: 'Un miembro del equipo se ha unido a la conversación.',
         metadata: {
           type: 'takeover',
           staff_user_id: auth.user.id,

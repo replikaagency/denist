@@ -6,9 +6,10 @@ import { startOrResumeConversation } from '@/services/conversation.service';
 import { insertMessage, getRecentMessages } from '@/lib/db/messages';
 import { getAIGreeting, LIMITS } from '@/config/constants';
 import { checkRateLimit, getClientIp } from '@/lib/rate-limit';
+import { SessionTokenSchema } from '@/lib/schemas/session';
 
 const StartChatSchema = z.object({
-  session_token: z.string().min(1).max(200),
+  session_token: SessionTokenSchema,
 });
 
 /**
@@ -35,14 +36,14 @@ export async function POST(request: NextRequest) {
     const ip = getClientIp(request);
     const ipLimit = checkRateLimit(`chat-start-ip:${ip}`, 30, 60_000);
     if (!ipLimit.allowed) {
-      return errorResponse('RATE_LIMITED', 'Too many requests from this address.', 429);
+      return errorResponse('RATE_LIMITED', 'Demasiadas solicitudes desde esta dirección. Por favor, espera un momento.', 429);
     }
     const tokenLimit = checkRateLimit(`chat-start:${parsed.data.session_token}`, 10, 60_000);
     if (!tokenLimit.allowed) {
-      return errorResponse('RATE_LIMITED', 'Too many requests. Please wait a moment.', 429);
+      return errorResponse('RATE_LIMITED', 'Demasiadas solicitudes. Por favor, espera un momento.', 429);
     }
 
-    const contact = await resolveContact(parsed.data.session_token);
+    const contact = await resolveContact({ channel: 'web_chat', session_token: parsed.data.session_token });
     const { conversation, isNew } = await startOrResumeConversation(contact.id);
 
     let messages: Awaited<ReturnType<typeof getRecentMessages>>;

@@ -1,5 +1,6 @@
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 import { AppError } from '@/lib/errors';
+import { normalizePhone } from '@/lib/phone';
 import type { Contact } from '@/types/database';
 
 const db = () => createSupabaseAdminClient();
@@ -70,6 +71,36 @@ export async function updateContact(
 }
 
 /**
+ * Find a contact by phone number.
+ * Used for channel-based contact resolution (WhatsApp, SMS).
+ */
+export async function findContactByPhone(phone: string): Promise<Contact | null> {
+  const { data, error } = await db()
+    .from('contacts')
+    .select('*')
+    .eq('phone', normalizePhone(phone))
+    .maybeSingle();
+
+  if (error) throw AppError.database('Failed to look up contact by phone', error);
+  return data as Contact | null;
+}
+
+/**
+ * Find a contact by email address.
+ * Used for channel-based contact resolution (email channel).
+ */
+export async function findContactByEmail(email: string): Promise<Contact | null> {
+  const { data, error } = await db()
+    .from('contacts')
+    .select('*')
+    .eq('email', email.toLowerCase().trim())
+    .maybeSingle();
+
+  if (error) throw AppError.database('Failed to look up contact by email', error);
+  return data as Contact | null;
+}
+
+/**
  * Find a contact by email or phone (for de-duplication before creating).
  */
 export async function findContactByEmailOrPhone(
@@ -84,7 +115,7 @@ export async function findContactByEmailOrPhone(
     const { data, error } = await supabase
       .from('contacts')
       .select('*')
-      .eq('email', email)
+      .eq('email', email.toLowerCase().trim())
       .maybeSingle();
     if (error) throw AppError.database('Failed to look up contact by email', error);
     if (data) return data as Contact;
@@ -94,7 +125,7 @@ export async function findContactByEmailOrPhone(
     const { data, error } = await supabase
       .from('contacts')
       .select('*')
-      .eq('phone', phone)
+      .eq('phone', normalizePhone(phone))
       .maybeSingle();
     if (error) throw AppError.database('Failed to look up contact by phone', error);
     if (data) return data as Contact;
@@ -113,4 +144,24 @@ export async function getContactById(id: string): Promise<Contact> {
   if (error) throw AppError.database('Failed to fetch contact', error);
   if (!data) throw AppError.notFound('Contact', id);
   return data as Contact;
+}
+
+/**
+ * Moves session_token from a stub contact to the canonical duplicate row, then
+ * assigns a fresh UUID to the stub (session_token is NOT NULL UNIQUE).
+ * Keeps browser token + anon Realtime RLS (anon_owns_conversation) aligned with
+ * conversations.contact_id after relink.
+ */
+export async function transferSessionTokenToCanonical(
+  fromContactId: string,
+  toContactId: string,
+): Promise<void> {
+  if (fromContactId === toContactId) return;
+
+  const from = await getContactById(fromContactId);
+  const token = from.session_token;
+  const newStubToken = crypto.randomUUID();
+
+  await updateContact(fromContactId, { session_token: newStubToken });
+  await updateContact(toContactId, { session_token: token });
 }

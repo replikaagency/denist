@@ -1,7 +1,19 @@
+> **WARNING: OUTDATED — Describes pre-implementation design (v0.2.0)**
+>
+> This document was written before the system was built. Section 0 ("What's broken or unfinished")
+> describes problems that have since been resolved. The roadmap in §9 describes phases that are
+> complete. Do not treat this as a description of the current system.
+>
+> For current state: see `PROJECT_STATUS.md` and `CHANGELOG.md`.
+> For current architecture: the service layer, conversation engine, and all planned routes
+> are fully implemented as described in §1–§5.
+
+---
+
 # Dental Reception AI — System Architecture
 
-> **Version**: 0.2.0  
-> **Status**: Architecture finalized — ready for implementation  
+> **Version**: 0.2.0 (outdated — see warning above)
+> **Status**: Architecture finalized — ready for implementation
 > **Stack**: Next.js 16 (App Router) · TypeScript · Tailwind CSS v4 · shadcn/ui · Supabase · OpenAI · Zod 4
 
 ---

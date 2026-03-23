@@ -7,6 +7,9 @@ import type {
   AppointmentRequestWithContact,
 } from '@/types/database';
 
+// Re-export AppError so appointment.service.ts can surface typed errors.
+export { AppError };
+
 const db = () => createSupabaseAdminClient();
 
 export async function createAppointmentRequest(insert: {
@@ -105,6 +108,71 @@ export async function updateAppointmentRequest(
   if (error) throw AppError.database('Failed to update appointment request', error);
   if (!data) throw AppError.notFound('AppointmentRequest', id);
   return data as AppointmentRequest;
+}
+
+/**
+ * Return all open (pending | confirmed) appointment requests for a contact,
+ * across ALL conversations. Used by the reschedule flow to find which
+ * appointment(s) the patient might want to change.
+ */
+export async function getOpenAppointmentRequestsForContact(
+  contactId: string,
+): Promise<AppointmentRequest[]> {
+  const { data, error } = await db()
+    .from('appointment_requests')
+    .select('*')
+    .eq('contact_id', contactId)
+    .in('status', ['pending', 'confirmed'])
+    .order('created_at', { ascending: false });
+
+  if (error) throw AppError.database('Failed to fetch open requests for contact', error);
+  return (data ?? []) as AppointmentRequest[];
+}
+
+/**
+ * Call the reschedule_appointment_request Postgres RPC.
+ * Cancels the old request and creates the new one in a single transaction.
+ * Returns the new request UUID.
+ *
+ * Throws typed AppErrors on known failure codes so callers can handle them
+ * gracefully without parsing raw Postgres error text.
+ */
+export async function rescheduleAppointmentRequestRPC(params: {
+  oldRequestId: string;
+  contactId: string;
+  conversationId: string;
+  leadId: string;
+  appointmentType: AppointmentType;
+  preferredDate: string | null;
+  preferredTimeOfDay: string | null;
+  notes: string | null;
+}): Promise<string> {
+  // supabase-js RPC types are derived from Database['public']['Functions'].
+  // The reschedule function was added via a migration and is not in the
+  // generated type, so we cast to `any` for this one call.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data, error } = await (db() as any).rpc('reschedule_appointment_request', {
+    p_old_request_id:  params.oldRequestId,
+    p_contact_id:      params.contactId,
+    p_conversation_id: params.conversationId,
+    p_lead_id:         params.leadId,
+    p_appointment_type: params.appointmentType,
+    p_preferred_date:  params.preferredDate,
+    p_preferred_time:  params.preferredTimeOfDay,
+    p_notes:           params.notes,
+  });
+
+  if (error) {
+    if (error.message?.includes('RESCHEDULE_NOT_FOUND')) {
+      throw AppError.notFound('AppointmentRequest', params.oldRequestId);
+    }
+    if (error.message?.includes('RESCHEDULE_ALREADY_CLOSED')) {
+      throw AppError.conflict('That appointment has already been cancelled or completed.');
+    }
+    throw AppError.database('Reschedule RPC failed', error);
+  }
+
+  return data as string;
 }
 
 export async function listAppointmentRequests(params: {

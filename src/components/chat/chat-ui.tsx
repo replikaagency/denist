@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SendHorizonal, RotateCcw } from "lucide-react";
+import { Loader2, SendHorizonal, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -9,6 +9,13 @@ import { ChatMessage, type Message } from "@/components/chat/chat-message";
 import { useRealtimeMessages } from "@/hooks/use-realtime";
 
 const SESSION_TOKEN_KEY = "dental_ai_session_token";
+type MessageOption = { label: string; value: string };
+type MessageWithMetadata = Message & {
+  metadata?: {
+    type?: string;
+    options?: MessageOption[];
+  };
+};
 
 function getOrCreateSessionToken(): string {
   if (typeof window === "undefined") return "";
@@ -24,28 +31,96 @@ function getTime() {
   return new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+/**
+ * UI-only pacing before showing the assistant bubble (not API latency).
+ * Short replies feel snappier; long replies get a slightly longer “typing” beat.
+ * Zero when prefers-reduced-motion (no artificial wait).
+ */
+function computeAssistantRevealDelayMs(content: string, reducedMotion: boolean): number {
+  if (reducedMotion) return 0;
+  const len = content.length;
+  if (len <= 40) {
+    return Math.min(380, 220 + len * 3);
+  }
+  const scaled = 360 + Math.min(len, 220) * 2.6;
+  return Math.min(900, Math.max(400, Math.round(scaled)));
+}
+
 export function ChatUI() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<MessageWithMetadata[]>([]);
   const [input, setInput] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
+  const [httpPending, setHttpPending] = useState(false);
+  const [canShowTypingAfterUser, setCanShowTypingAfterUser] = useState(false);
+  const [awaitingReveal, setAwaitingReveal] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [initializing, setInitializing] = useState(true);
-  // True once the conversation has been handed off to a human agent.
-  // Disables the chat input and shows a waiting banner.
+  const [conversationStatus, setConversationStatus] = useState<string | null>(null);
+  const [aiEnabled, setAiEnabled] = useState<boolean | null>(null);
+  // True once the conversation has been handed off to a human agent (disables input).
   const [isHandedOff, setIsHandedOff] = useState(false);
-  // Two-step confirmation for "Start new conversation" — avoids accidental resets.
   const [confirmNew, setConfirmNew] = useState(false);
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const sessionTokenRef = useRef("");
-  // Track message IDs we have already rendered to prevent duplicates on
-  // realtime reconnect. Seeded with greeting id when the conversation starts.
   const seenIdsRef = useRef<Set<string>>(new Set());
+  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRevealMsgRef = useRef<MessageWithMetadata | null>(null);
+  const optionClickLockRef = useRef(false);
+
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setPrefersReducedMotion(mq.matches);
+    const onChange = () => setPrefersReducedMotion(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  const isChatBusy = httpPending || awaitingReveal;
+  const showTypingIndicator =
+    (httpPending && canShowTypingAfterUser) || awaitingReveal;
+
+  const showHandoffNotify =
+    conversationId != null &&
+    !initializing &&
+    (conversationStatus === "waiting_human" ||
+      (aiEnabled === false && conversationStatus !== "human_active"));
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isTyping]);
+    bottomRef.current?.scrollIntoView({
+      behavior: prefersReducedMotion ? "auto" : "smooth",
+    });
+  }, [messages, showTypingIndicator, showHandoffNotify, prefersReducedMotion]);
+
+  useEffect(() => {
+    if (!httpPending) {
+      setCanShowTypingAfterUser(false);
+      return;
+    }
+    setCanShowTypingAfterUser(false);
+    const t = setTimeout(() => setCanShowTypingAfterUser(true), 130);
+    return () => clearTimeout(t);
+  }, [httpPending]);
+
+  useEffect(() => {
+    return () => {
+      if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+    };
+  }, []);
+
+  const flushPendingReveal = useCallback(() => {
+    if (revealTimerRef.current) {
+      clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
+    const pending = pendingRevealMsgRef.current;
+    if (!pending) return;
+    pendingRevealMsgRef.current = null;
+    setAwaitingReveal(false);
+    setMessages((prev) => [...prev, pending]);
+  }, []);
 
   const startConversation = useCallback(async () => {
     try {
@@ -69,20 +144,37 @@ export function ChatUI() {
 
       setConversationId(json.data.conversation.id);
 
+      try {
+        const tokenRes = await fetch("/api/chat/realtime-token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_token: token }),
+        });
+        const tokenJson = await tokenRes.json();
+        if (tokenJson.ok) {
+          setRealtimeToken(tokenJson.data.token);
+        }
+      } catch {
+        // Realtime disabled; chat still works via HTTP
+      }
+
       const conv = json.data.conversation as { ai_enabled: boolean; status: string };
-      if (!conv.ai_enabled || conv.status === 'waiting_human' || conv.status === 'human_active') {
+      setConversationStatus(conv.status);
+      setAiEnabled(conv.ai_enabled);
+      if (!conv.ai_enabled || conv.status === "waiting_human" || conv.status === "human_active") {
         setIsHandedOff(true);
       }
 
-      // `messages` is always present — history for resumes, greeting for new convos.
-      // Map DB message roles to the display roles used by <ChatMessage>.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const incoming = (json.data.messages as any[] ?? []).map((m: any) => ({
         id: m.id as string,
         role: (m.role === "patient" ? "user" : m.role === "human" ? "staff" : "assistant") as
-          "user" | "assistant" | "staff",
+          | "user"
+          | "assistant"
+          | "staff",
         content: m.content as string,
         timestamp: getTime(),
+        metadata: m.metadata as { type?: string; options?: MessageOption[] } | undefined,
       }));
 
       for (const m of incoming) {
@@ -92,7 +184,7 @@ export function ChatUI() {
         setMessages(incoming);
       }
     } catch (err) {
-      setError("Could not connect to the server. Please try again.");
+      setError("No se ha podido conectar. Por favor, inténtalo de nuevo.");
     } finally {
       setInitializing(false);
     }
@@ -102,7 +194,6 @@ export function ChatUI() {
     startConversation();
   }, [startConversation]);
 
-  // Clean up the confirmation auto-cancel timer on unmount.
   useEffect(() => {
     return () => {
       if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
@@ -111,65 +202,71 @@ export function ChatUI() {
 
   const handleNewConversation = useCallback(() => {
     if (!confirmNew) {
-      // First click — ask for confirmation and auto-cancel after 3 s.
       setConfirmNew(true);
       confirmTimerRef.current = setTimeout(() => setConfirmNew(false), 3000);
       return;
     }
-    // Guard: don't reset while a send is in-flight — the response callback
-    // would append an AI message to the freshly cleared conversation.
-    if (isTyping) return;
-    // Second click — reset and start fresh.
+    if (isChatBusy) return;
     if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
     setConfirmNew(false);
     setMessages([]);
     setInput("");
-    setIsTyping(false);
+    setHttpPending(false);
+    setAwaitingReveal(false);
+    setCanShowTypingAfterUser(false);
+    if (revealTimerRef.current) {
+      clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
+    pendingRevealMsgRef.current = null;
     setIsHandedOff(false);
     setError(null);
     setConversationId(null);
+    setConversationStatus(null);
+    setAiEnabled(null);
+    setRealtimeToken(null);
     seenIdsRef.current = new Set();
-    // Generate a new session token so the API creates a brand-new conversation.
     const newToken = crypto.randomUUID();
     localStorage.setItem(SESSION_TOKEN_KEY, newToken);
     sessionTokenRef.current = newToken;
     startConversation();
-  }, [confirmNew, isTyping, startConversation]);
+  }, [confirmNew, isChatBusy, startConversation]);
 
-  // Realtime: receive staff replies and system notifications without page reload.
-  // Processes `human` and `system` role inserts only — patient and AI messages
-  // are handled via the HTTP response in sendMessage().
   useRealtimeMessages(conversationId, (newMsg) => {
     const role = newMsg.role as string;
-    if (role !== 'human' && role !== 'system') return;
+    if (role !== "human" && role !== "system") return;
     const msgId = newMsg.id as string;
     if (seenIdsRef.current.has(msgId)) return;
+    // Preserve order: if an AI reply is still “in the wings”, show it before staff/system.
+    flushPendingReveal();
     seenIdsRef.current.add(msgId);
     setMessages((prev) => [
       ...prev,
       {
         id: msgId,
-        role: role === 'system' ? 'system' : 'staff',
+        role: role === "system" ? "system" : "staff",
         content: newMsg.content as string,
         timestamp: getTime(),
+        animateEnter: role !== "system",
       },
     ]);
-  });
+  }, realtimeToken);
 
-  async function sendMessage() {
-    const trimmed = input.trim();
-    if (!trimmed || isTyping || !conversationId) return;
+  async function sendMessage(overrideContent?: string) {
+    const trimmed = (overrideContent ?? input).trim();
+    if (!trimmed || isChatBusy || !conversationId) return;
 
     const userMsg: Message = {
       id: crypto.randomUUID(),
       role: "user",
       content: trimmed,
       timestamp: getTime(),
+      animateEnter: true,
     };
 
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
-    setIsTyping(true);
+    setHttpPending(true);
     setError(null);
 
     try {
@@ -186,30 +283,64 @@ export function ChatUI() {
       const json = await res.json();
 
       if (!json.ok) {
-        setError(json.error?.message ?? "Failed to send message");
+        setError(json.error?.message ?? "No se ha podido enviar el mensaje");
+        setHttpPending(false);
+        optionClickLockRef.current = false;
+        pendingRevealMsgRef.current = null;
         return;
       }
 
-      const aiMsg: Message = {
+      const aiMsg: MessageWithMetadata = {
         id: json.data.message.id,
         role: "assistant",
         content: json.data.message.content,
         timestamp: getTime(),
+        animateEnter: true,
+        streamReveal: true,
+        metadata: json.data.message.metadata as { type?: string; options?: MessageOption[] } | undefined,
       };
 
-      // Mark this AI message as seen so the realtime INSERT doesn't duplicate it
       seenIdsRef.current.add(json.data.message.id as string);
-      setMessages((prev) => [...prev, aiMsg]);
 
-      // Detect escalation: conversation is now waiting for a human agent
       const conv = json.data.conversation as { ai_enabled: boolean; status: string } | undefined;
-      if (conv && (!conv.ai_enabled || conv.status === 'waiting_human')) {
-        setIsHandedOff(true);
+      if (conv) {
+        setConversationStatus(conv.status);
+        setAiEnabled(conv.ai_enabled);
+        if (!conv.ai_enabled || conv.status === "waiting_human") {
+          setIsHandedOff(true);
+        }
+      }
+
+      const delayMs = computeAssistantRevealDelayMs(aiMsg.content, prefersReducedMotion);
+      pendingRevealMsgRef.current = aiMsg;
+      setHttpPending(false);
+
+      if (delayMs === 0) {
+        pendingRevealMsgRef.current = null;
+        setMessages((prev) => [...prev, aiMsg]);
+        setAwaitingReveal(false);
+        optionClickLockRef.current = false;
+      } else {
+        setAwaitingReveal(true);
+        if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+        revealTimerRef.current = setTimeout(() => {
+          revealTimerRef.current = null;
+          pendingRevealMsgRef.current = null;
+          setMessages((prev) => [...prev, aiMsg]);
+          setAwaitingReveal(false);
+        }, delayMs);
+        optionClickLockRef.current = false;
       }
     } catch (err) {
-      setError("Connection error. Please try again.");
-    } finally {
-      setIsTyping(false);
+      setError("Error de conexión. Por favor, inténtalo de nuevo.");
+      setHttpPending(false);
+      setAwaitingReveal(false);
+      optionClickLockRef.current = false;
+      pendingRevealMsgRef.current = null;
+      if (revealTimerRef.current) {
+        clearTimeout(revealTimerRef.current);
+        revealTimerRef.current = null;
+      }
     }
   }
 
@@ -222,11 +353,11 @@ export function ChatUI() {
           </div>
           <div className="flex-1">
             <CardTitle className="text-sm font-semibold">
-              {process.env.NEXT_PUBLIC_CLINIC_NAME ?? "Our Dental Practice"}
+              {process.env.NEXT_PUBLIC_CLINIC_NAME ?? "Clínica Dental"}
             </CardTitle>
             <CardDescription className="flex items-center gap-1.5 text-xs">
               <span className="size-1.5 rounded-full bg-emerald-500" />
-              AI Receptionist · Online
+              Recepcionista · En línea
             </CardDescription>
           </div>
           {!initializing && messages.length > 0 && (
@@ -238,7 +369,7 @@ export function ChatUI() {
               title="Start a new conversation"
             >
               <RotateCcw className="size-3" />
-              {confirmNew ? "Confirm?" : "New chat"}
+              {confirmNew ? "¿Confirmar?" : "Nueva conversación"}
             </Button>
           )}
         </div>
@@ -248,7 +379,7 @@ export function ChatUI() {
         <div className="flex flex-col gap-4">
           {initializing && messages.length === 0 && (
             <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
-              Starting conversation...
+              Iniciando conversación...
             </div>
           )}
 
@@ -262,25 +393,74 @@ export function ChatUI() {
                   if (!conversationId) startConversation();
                 }}
               >
-                Retry
+                Reintentar
               </button>
             </div>
           )}
 
-          {messages.map((msg) => (
-            <ChatMessage key={msg.id} message={msg} />
-          ))}
+          {messages.map((msg) => {
+            const options =
+              msg.role === "assistant" &&
+              msg.metadata?.type === "awaiting_confirmation" &&
+              Array.isArray(msg.metadata?.options)
+                ? msg.metadata.options
+                : [];
+            return (
+              <div key={msg.id} className="flex flex-col gap-2">
+                <ChatMessage message={msg} reduceMotion={prefersReducedMotion} />
+                {options.length > 0 && (
+                  <div className="ml-11 flex flex-wrap gap-2">
+                    {options.map((opt) => (
+                      <Button
+                        key={`${msg.id}-${opt.value}`}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        disabled={isChatBusy || initializing || !conversationId || optionClickLockRef.current}
+                        onClick={() => {
+                          if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
+                          optionClickLockRef.current = true;
+                          sendMessage(opt.value);
+                        }}
+                      >
+                        {opt.label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
 
-          {isTyping && (
-            <div className="flex items-center gap-3">
+          {showHandoffNotify && (
+            <div
+              className="flex items-center gap-2.5 rounded-xl border border-amber-200/80 bg-amber-50/90 px-3.5 py-2.5 text-xs text-amber-900 shadow-sm animate-in fade-in slide-in-from-bottom-1 duration-200"
+              role="status"
+              aria-live="polite"
+            >
+              <Loader2
+                className="size-3.5 shrink-0 animate-spin text-amber-700 motion-reduce:animate-none"
+                aria-hidden
+              />
+              <span className="leading-snug">Notificando al equipo…</span>
+            </div>
+          )}
+
+          {showTypingIndicator && (
+            <div
+              className="flex items-center gap-3 animate-in fade-in duration-150"
+              role="status"
+              aria-label="La asistente está escribiendo"
+            >
               <div className="flex size-8 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-xs font-semibold text-muted-foreground">
                 AI
               </div>
               <div className="rounded-2xl rounded-tl-sm border border-border/60 bg-muted px-4 py-2.5">
-                <span className="flex gap-1">
-                  <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:0ms]" />
-                  <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:150ms]" />
-                  <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:300ms]" />
+                <span className="flex gap-1 motion-reduce:animate-none" aria-hidden>
+                  <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:0ms] motion-reduce:animate-none" />
+                  <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:150ms] motion-reduce:animate-none" />
+                  <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:300ms] motion-reduce:animate-none" />
                 </span>
               </div>
             </div>
@@ -292,15 +472,20 @@ export function ChatUI() {
 
       {isHandedOff ? (
         <CardFooter className="border-t px-4 py-3">
-          <div className="flex w-full items-center justify-center gap-2 rounded-md bg-amber-50 px-4 py-2.5 text-sm text-amber-700 border border-amber-200">
-            <span className="size-2 animate-pulse rounded-full bg-amber-500" />
-            A staff member will be with you shortly.
+          <div
+            className="flex w-full items-center justify-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-700"
+            role="status"
+            aria-live="polite"
+          >
+            <span className="size-2 animate-pulse rounded-full bg-amber-500 motion-reduce:animate-none" />
+            Un miembro del equipo te atenderá en breve.
           </div>
         </CardFooter>
       ) : (
         <CardFooter className="border-t px-4 py-3">
           <form
             className="flex w-full items-center gap-2"
+            aria-busy={isChatBusy}
             onSubmit={(e) => {
               e.preventDefault();
               sendMessage();
@@ -308,10 +493,10 @@ export function ChatUI() {
           >
             <Input
               className="h-10 flex-1 text-sm"
-              placeholder="Type your message…"
+              placeholder="Escribe tu mensaje..."
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              disabled={isTyping || initializing || !conversationId}
+              disabled={isChatBusy || initializing || !conversationId}
               autoComplete="off"
               autoFocus
             />
@@ -319,7 +504,7 @@ export function ChatUI() {
               type="submit"
               size="icon"
               className="size-10 shrink-0"
-              disabled={!input.trim() || isTyping || !conversationId}
+              disabled={!input.trim() || isChatBusy || !conversationId}
               aria-label="Send message"
             >
               <SendHorizonal className="size-4" />
@@ -330,3 +515,5 @@ export function ChatUI() {
     </Card>
   );
 }
+
+export default ChatUI;

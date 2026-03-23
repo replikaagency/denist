@@ -1,5 +1,97 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Turn-limit escalation uses shared constant** (`src/lib/conversation/engine.ts`): Rule 5 now compares `state.turn_count` to `LIMITS.MAX_TURNS_BEFORE_ESCALATION` from `config/constants.ts` instead of a hardcoded `20`, so tuning the limit is single-sourced.
+
+### Added
+
+- **Pilot monitoring checklist** (`docs/PILOT_MONITORING.md`): What to watch during deployment (500s on `/api/chat`, handoff types, double-tab / concurrent request caveat).
+- **Staff doc: contact merge** (`docs/STAFF_CONTACT_MERGE.md`): Explains that duplicate phone/email relinks to the canonical contact and does not overwrite existing name fields on that record.
+
+## [1.1.0] — 2026-03-18
+
+### Added
+
+- **Robust rescheduling flow** (`supabase/migrations/0006_reschedule_support.sql`, `src/lib/db/appointments.ts`, `src/services/appointment.service.ts`, `src/services/chat.service.ts`): Atomic cancel-old + create-new via a Postgres RPC so the dedup index is never violated. Sub-flow: intent=`appointment_reschedule` triggers `findOpenRequestsForContact` → 0 results redirects to new booking, 1 auto-selects, 2+ shows numbered list (`selecting_target` phase, LLM bypassed, handled in step 6.7). Once target is locked (`collecting_new_details`), normal LLM turns fill new date/time/service. When data is complete `isRescheduleReady` enters the confirmation flow (Feature 1) showing old→new summary. On `yes`, `executeReschedule()` calls the RPC; if the old request was already closed by staff it falls back gracefully to `createRequest()`. On `no`, old appointment is untouched. `ConversationState` gains `reschedule_target_id`, `reschedule_target_summary`, `reschedule_phase` — all `.default()`-safe. DB types updated with `rescheduled_from`, `rescheduled_to`, `cancelled_at`, `cancel_reason`.
+
+## [1.0.0] — 2026-03-18
+
+### Added
+
+- **Explicit appointment confirmation flow** (`lib/conversation/schema.ts`, `services/chat.service.ts`): No appointment row is written to the DB until the patient explicitly confirms with "sí". When all required fields are collected the system now: (1) stores the appointment snapshot in `ConversationState.pending_appointment`, (2) sets `awaiting_confirmation=true`, (3) overrides the LLM reply with a structured confirmation summary. On the next turn the LLM is bypassed and `classifyConfirmation()` decides the branch: confirmed → `createRequest()` + clear state; declined → clear state + invite changes; ambiguous (×2) → escalate to human. `ConversationState` gains three new fields: `awaiting_confirmation`, `pending_appointment`, `confirmation_attempts` — all with `.default()` so existing DB records parse without a migration.
+
+## [0.9.1] — 2026-03-18
+
+### Fixed
+
+- **`fields.ts` prompts Spanish-ized** (`lib/conversation/fields.ts`): All `COMMON_PROMPTS` and the `post_treatment_concern` override were English and reached patients via `correctedReply` when the flow controller overrode the LLM. All 16 prompts + the fallback string are now natural Spanish (Spain). TypeScript: clean.
+
+- **Spanish service names now resolve correctly** (`services/appointment.service.ts`): `SERVICE_TYPE_TO_APPOINTMENT_TYPE` extended with ~60 Spanish variants covering new patient, cleaning/checkup, emergency, whitening, implants, orthodontics, and common other treatments. `resolveAppointmentType('limpieza dental')` now returns `'checkup'` instead of `'other'`. English entries preserved.
+
+- **`completed=true` flow-locking bug** (`lib/conversation/engine.ts`): The backstop that sets `completed=true` now only fires for scheduling intents (`appointment_request`, `appointment_reschedule`). Previously, intents with no `FIELD_REQUIREMENTS` entry (e.g. `gratitude`, `clinic_info`) would have `getMissingFields()` return `[]` and incorrectly set `completed=true`, permanently locking the conversation into `terminal` stage.
+
+- **Notes unbounded growth** (`services/appointment.service.ts`): The `buildEnrichPatch` notes-fallback merge now uses `!existing.notes.includes('Patient preferred')` as its deduplication guard instead of an exact string match. This prevents accumulation of multiple fallback entries when the patient mentions different unparseable date/time values across turns — the first fallback written is preserved; subsequent turns do not append.
+
+## [0.9.0] — 2026-03-18
+
+### Added
+
+- **Full Spanish localization** (`lib/conversation/prompts.ts`, `lib/conversation/engine.ts`, `config/constants.ts`): All system prompt layers, few-shot examples, fallback replies, escalation appends, and the AI greeting are now in Spanish (Spain, tú form). Fallback 5 detection extended with Spanish phrases ("déjame comprobar", "miro la disponibilidad", etc.). Pricing regex now strips both `$` and `€` amounts.
+
+- **Almería clinic config** (`lib/conversation/prompts.ts`): `DEFAULT_CLINIC_CONFIG` updated to Clínica Dental Sonrisa Almería with Spanish insurance providers, services, and providers. `ClinicConfig` extended with optional `timezone`, `appointment_duration`, `language` fields; env-var overrides added (`CLINIC_TIMEZONE`, `CLINIC_APPOINTMENT_DURATION`, `CLINIC_LANGUAGE`).
+
+### Fixed
+
+- **LLM parse failure no longer orphans the patient message** (`services/chat.service.ts`): If `processTurn` returns a parse error the service now inserts a fallback AI message ("Lo siento, no te he entendido bien…") and returns early instead of throwing, so the already-persisted patient message is never left without a reply. `ChatTurnResult.turnResult` is now `TurnResult | null`.
+
+- **`enrichContact` null no longer silently discarded** (`services/chat.service.ts`): When `enrichContact` returns `null` (duplicate phone/email detected) a `console.warn` is now emitted with `conversation_id` and `contact_id`.
+
+- **Race recovery failure now logged** (`services/appointment.service.ts`): If the post-constraint-violation re-query in `createRequest` still finds no winner, `console.error` is emitted before re-throwing.
+
+- **Redundant `getConversationById` eliminated** (`services/conversation.service.ts`, `services/chat.service.ts`): `saveState` now returns the updated `Conversation` (from `updateConversation`), removing the extra DB read that previously followed every turn.
+
+- **`ensureLead` called at most once per turn** (`services/chat.service.ts`): `lead` is hoisted before the identity block and reused in the appointment block, eliminating the duplicate `ensureLead` call on turns that fire both.
+
+### Observability
+
+- **Structured logs added** (`services/chat.service.ts`, `services/appointment.service.ts`):
+  - `[ChatService] correction_applied` — when `is_correction=true` after `processTurn`
+  - `[ChatService] unexpected_flow` — when `flowValidation.overridden=true`
+  - `[AppointmentService] appointment_created` — on new appointment row
+  - `[AppointmentService] appointment_updated` — on enrichment of existing row (both normal and race-recovery paths)
+
+## [0.8.8] — 2026-03-17
+
+### Fixed
+
+- **Patient realtime RLS tightened to session_token** (`supabase/migrations/0004_rls_patient_realtime.sql`, `app/api/chat/realtime-token/route.ts`, `hooks/use-realtime.ts`, `components/chat/chat-ui.tsx`): The anon SELECT policy on `messages` previously only checked that the conversation UUID existed — any anon who knew a valid UUID could read those messages. Now:
+  1. Anon must present a JWT with `session_token` claim (from `POST /api/chat/realtime-token`).
+  2. RLS policy `anon_read_own_messages` uses `anon_owns_conversation()` to verify the JWT's `session_token` matches the contact linked to the conversation.
+  3. `messages` and `conversations` are idempotently added to `supabase_realtime` publication (fixes projects that never ran the idempotent schema).
+  4. Chat widget fetches the realtime token after `POST /api/chat/start` and passes it to `useRealtimeMessages`; `supabase.realtime.setAuth(token)` is called before subscribing.
+  5. Requires `SUPABASE_JWT_SECRET` in env (Project Settings > API > JWT Secret). If missing, realtime-token returns 503 and patient chat works without live updates.
+
+## [0.8.7] — 2026-03-17
+
+### Fixed
+
+- **Appointment confirmation response flow** (`lib/conversation/prompts.ts`, `lib/conversation/engine.ts`, `services/chat.service.ts`): After the patient confirmed a preference (e.g. "a las 8"), the AI would say "let me check" or "I'll get back to you" and the conversation felt incomplete. Now: (1) prompt instructs a clear final confirmation (request registered, preference noted, staff will confirm); (2) few-shot `appointment_completion` example injected when all fields collected; (3) engine fallback rewrites replies that still contain misleading phrases.
+
+## [0.8.6] — 2026-03-17
+
+### Fixed
+
+- **Patient scheduling preferences no longer silently lost** (`services/appointment.service.ts`): Time phrases like "a las 8", "at 8", "8:00", and "17:30" that could not be normalized to `preferred_time_of_day` were dropped. Now: (1) `normalizeTimeOfDay` recognizes bare hours and "a las X" / "at X" patterns (6–11 → morning, 12–16 → afternoon, 17–23 → evening) and 24h format; (2) when normalization still fails, the raw text is preserved in `notes` as "Patient preferred time: …" and "Patient preferred date: …"; (3) enrichment merges new fallback text into existing notes instead of overwriting.
+
+## [0.8.5] — 2026-03-17
+
+### Fixed
+
+- **Appointment request cannot be confirmed without `confirmed_datetime`** (`app/api/appointment-requests/[id]/route.ts`, `app/dashboard/appointments/appointments-list.tsx`): Staff could previously click "Confirm" and set `status = confirmed` without providing the actual booked slot, leaving `confirmed_datetime` null. The API now rejects `status: confirmed` when `confirmed_datetime` is missing. The dashboard Confirm button opens a dialog that collects the booked date/time before confirming.
+
 ## [0.8.4] — 2026-03-17
 
 ### Fixed

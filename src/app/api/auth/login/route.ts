@@ -7,13 +7,28 @@
 
 import { type NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
+import { checkRateLimit, getClientIp } from '@/lib/rate-limit';
+
+/** Brute-force mitigation — independent of Supabase auth rate limits. */
+const LOGIN_ATTEMPTS_PER_IP_PER_15_MIN = 40;
 
 export async function POST(request: NextRequest) {
+  const ip = getClientIp(request);
+  const ipLimit = checkRateLimit(`staff-login-ip:${ip}`, LOGIN_ATTEMPTS_PER_IP_PER_15_MIN, 15 * 60_000);
+  if (!ipLimit.allowed) {
+    return NextResponse.json({ ok: false, error: 'rate_limited' }, { status: 429 });
+  }
+
   const formData = await request.formData();
   const email = formData.get('email') as string;
   const password = formData.get('password') as string;
 
   if (!email || !password) {
+    return NextResponse.json({ ok: false, error: 'invalid_credentials' }, { status: 400 });
+  }
+
+  const emailTrim = email.trim();
+  if (emailTrim.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTrim)) {
     return NextResponse.json({ ok: false, error: 'invalid_credentials' }, { status: 400 });
   }
 
@@ -39,7 +54,7 @@ export async function POST(request: NextRequest) {
     },
   );
 
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  const { data, error } = await supabase.auth.signInWithPassword({ email: emailTrim, password });
 
   if (error) {
     return NextResponse.json({ ok: false, error: 'invalid_credentials' }, { status: 401 });

@@ -4,12 +4,13 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import { MessageSquare, Users, Calendar, LogOut } from 'lucide-react';
+import { MessageSquare, Users, Calendar, Clock, LogOut } from 'lucide-react';
 
 const NAV_ITEMS = [
-  { href: '/dashboard', label: 'Conversations', icon: MessageSquare },
-  { href: '/dashboard/leads', label: 'Leads', icon: Users },
-  { href: '/dashboard/appointments', label: 'Appointments', icon: Calendar },
+  { href: '/dashboard', label: 'Conversaciones', icon: MessageSquare },
+  { href: '/dashboard/leads', label: 'Prospectos', icon: Users },
+  { href: '/dashboard/appointments', label: 'Citas', icon: Calendar },
+  { href: '/dashboard/availability', label: 'Disponibilidad', icon: Clock },
 ];
 
 export function DashboardShell({
@@ -29,7 +30,7 @@ export function DashboardShell({
             <div className="flex size-7 items-center justify-center rounded-md bg-primary text-[11px] font-bold text-primary-foreground">
               ✦
             </div>
-            <span className="text-sm font-semibold tracking-tight">Reception</span>
+            <span className="text-sm font-semibold tracking-tight">Recepción</span>
           </div>
 
           <nav className="ml-6 flex items-center gap-1">
@@ -59,7 +60,7 @@ export function DashboardShell({
             <form action="/api/auth/logout" method="POST">
               <Button variant="ghost" size="sm" type="submit" className="gap-1.5 text-xs">
                 <LogOut className="size-3.5" />
-                Sign out
+                Cerrar sesión
               </Button>
             </form>
           </div>
