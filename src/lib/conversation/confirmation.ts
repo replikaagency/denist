@@ -15,6 +15,17 @@ export function normalizeConfirmationText(text: string): string {
 }
 
 /**
+ * Maps structured correction-choice tokens to deterministic plain text so the
+ * existing correction pipeline can route date/time/service recollection.
+ */
+export function mapCorrectionChoiceToken(text: string): string {
+  if (text === 'change_date') return 'quiero cambiar la fecha';
+  if (text === 'change_time') return 'quiero cambiar la hora';
+  if (text === 'change_service') return 'quiero cambiar el servicio';
+  return text;
+}
+
+/**
  * True when the message asks to change date/time, negates the proposed slot,
  * or mixes affirmation with a correction — must NOT be treated as a clean "yes"
  * for booking confirmation.
