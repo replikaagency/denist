@@ -2,6 +2,23 @@ import { saveState } from '@/services/conversation.service';
 import { insertMessage } from '@/lib/db/messages';
 import { looksLikeFullName, extractNameGuard, looksLikePhone, extractPhoneGuard, looksLikeEmail, extractEmailGuard, isYes, isNo, extractNewOrReturningGuard } from './intake-guards';
 import { getMissingFields } from './fields';
+import type { ConversationState } from './schema';
+import type { Contact, Conversation } from '@/types/database';
+
+type IntakeCaptureParams = {
+  state: ConversationState;
+  content: string;
+  conversation_id: string;
+  contact: Contact;
+  getConversationById: (conversationId: string) => Promise<Conversation>;
+};
+
+type IntakeCaptureResult = {
+  message: Awaited<ReturnType<typeof insertMessage>>;
+  contact: Contact;
+  conversation: Conversation;
+  turnResult: null;
+};
 
 /**
  * Attempts to deterministically capture a required intake field from user input.
@@ -13,7 +30,7 @@ export async function tryDeterministicIntakeCapture({
   conversation_id,
   contact,
   getConversationById,
-}) {
+}: IntakeCaptureParams): Promise<IntakeCaptureResult | null> {
   const missingFields = state.current_intent ? getMissingFields(state.current_intent, { patient: state.patient, appointment: state.appointment, symptoms: state.symptoms }) : [];
   if (missingFields.length === 0) return null;
   const field = missingFields[0];

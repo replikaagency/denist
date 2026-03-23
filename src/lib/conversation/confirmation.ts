@@ -45,13 +45,13 @@ export function detectCorrectionSignals(text: string): boolean {
 const BARE_AFFIRMATION =
   /^\s*(ok|vale|si|perfecto|genial|claro|dale|adelante|vamos|confirmo|yes|yep)(\s+(perfecto|genial|claro|gracias))?\s*[!?.]*\s*$/;
 
-/** "sí pero …", "ok pero …", "vale pero …" */
+/** "sí pero …", "ok, pero …", "vale pero …" — comma/punct between tokens allowed */
 const MIXED_AFFIRM_THEN_BUT =
-  /\b(si|ok|vale|dale|perfecto|claro|genial)\s+(pero|aunque|mas bien|sin embargo)\b/;
+  /\b(si|ok|vale|dale|perfecto|claro|genial)[,!.]?\s+(pero|aunque|mas bien|sin embargo)\b/;
 
-/** "vale cambia", "ok cambiar …" */
+/** "sí cambia", "vale cambia", "ok, cambiar …" — comma/punct between tokens allowed */
 const AFFIRM_THEN_CHANGE_VERB =
-  /\b(vale|ok|dale)\s+(cambia|cambiar|modifica|modificar|ajusta|ajustar)\b/;
+  /\b(si|vale|ok|dale|confirmo|perfecto|claro|genial)[,!.]?\s+(cambia|cambiar|modifica|modificar|ajusta|ajustar)\b/;
 
 const CONJUNCTION_OR_CONTRAST =
   /\b(pero|aunque|en vez de|en lugar de|mejor dicho|sino que|sino)\b/;
@@ -89,7 +89,14 @@ const NO =
  * ambiguous (re-confirm), not a bare "no" decline.
  */
 export function classifyConfirmation(text: string): ConfirmationClass {
-  const t = normalizeConfirmationText(text);
+  // Channel-level synthetic inputs: map explicit buttons/tokens to deterministic replies.
+  const mappedText =
+    text === 'confirm_yes'
+      ? 'sí'
+      : text === 'confirm_change'
+        ? 'no'
+        : text;
+  const t = normalizeConfirmationText(mappedText);
 
   if (UNCERTAINTY.test(t)) return 'ambiguous';
 
@@ -98,7 +105,7 @@ export function classifyConfirmation(text: string): ConfirmationClass {
 
   if (hasYes && hasNo) return 'ambiguous';
 
-  if (detectCorrectionSignals(text)) return 'ambiguous';
+  if (detectCorrectionSignals(mappedText)) return 'ambiguous';
 
   if (hasYes) return 'yes';
   if (hasNo) return 'no';

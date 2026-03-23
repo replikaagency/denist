@@ -29,6 +29,16 @@ describe('classifyConfirmation', () => {
     expect(classifyConfirmation('ok pero mejor otro día')).toBe('ambiguous');
     expect(classifyConfirmation('vale cambia')).toBe('ambiguous');
     expect(classifyConfirmation('vale cambiar la fecha')).toBe('ambiguous');
+    // comma between affirmation and correction (the reported bug)
+    expect(classifyConfirmation('sí, pero cambia al martes')).toBe('ambiguous');
+    expect(classifyConfirmation('ok, pero a otra hora')).toBe('ambiguous');
+    expect(classifyConfirmation('sí, cambia al martes')).toBe('ambiguous');
+    expect(classifyConfirmation('confirmo, cambia la fecha')).toBe('ambiguous');
+  });
+
+  it('maps synthetic confirmation tokens deterministically', () => {
+    expect(classifyConfirmation('confirm_yes')).toBe('yes');
+    expect(classifyConfirmation('confirm_change')).toBe('no');
   });
 
   it('returns ambiguous for correction / slot objection, not a bare no', () => {

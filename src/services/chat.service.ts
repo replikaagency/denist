@@ -19,6 +19,7 @@ import { log } from '@/lib/logger';
 
 import { enrichContact } from './contact.service';
 import { tryDeterministicIntakeCapture } from '@/lib/conversation/intake-capture';
+import { extractNameGuard, extractPhoneGuard, extractEmailGuard } from '@/lib/conversation/intake-guards';
 import { getContactById } from '@/lib/db/contacts';
 import {
   verifyOwnership,
@@ -53,26 +54,6 @@ import type { Contact, Conversation, Lead, Message } from '@/types/database';
 /** Age of confirmation prompt before we reset and return the patient to the LLM flow. */
 const CONFIRMATION_PROMPT_TTL_MS = 30 * 60 * 1000;
 
-/**
- * Regex-based fallback name extractor for Spanish input.
- * Returns a trimmed name string, or null if no pattern matched.
- * Used when the LLM fails to populate patient_fields.full_name.
- */
-function extractNameFallback(message: string): string | null {
-  const normalized = message.trim();
-  const patterns = [
-    /(?:me\s+llamo|mi\s+nombre\s+es|soy|llámame|me\s+llaman)\s+([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+(?:\s+[A-ZÁÉÍÓÚÜÑA-Za-záéíóúüñ][a-záéíóúüñA-Za-z]+)*)/i,
-  ];
-  for (const re of patterns) {
-    const m = normalized.match(re);
-    if (m?.[1]) {
-      const name = m[1].trim();
-      // Reject single-char matches and obviously non-name words
-      if (name.length >= 2 && !/^\d+$/.test(name)) return name;
-    }
-  }
-  return null;
-}
 
 export interface ChatTurnInput {
   session_token: string;
@@ -190,11 +171,12 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   // and execute the corresponding branch.  The LLM is intentionally bypassed
   // so a "sí" cannot be misclassified or rewritten by any fallback rule.
   if (state.awaiting_confirmation && state.pending_appointment) {
-    // Defensive / legacy: invariant is awaiting_confirmation ⇒ confirmation_prompt_at set.
-    // Pre-hardening rows may lack the timestamp; backfill once per turn so expiry can apply.
-    if (!state.confirmation_prompt_at) {
-      state.confirmation_prompt_at = new Date().toISOString();
-    }
+    try {
+      // Defensive / legacy: invariant is awaiting_confirmation ⇒ confirmation_prompt_at set.
+      // Pre-hardening rows may lack the timestamp; backfill once per turn so expiry can apply.
+      if (!state.confirmation_prompt_at) {
+        state.confirmation_prompt_at = new Date().toISOString();
+      }
 
     // Confirmation expiry: use the prompt timestamp (set when we first showed
     // the summary), NOT last_message_at — that updates on every patient send
@@ -222,6 +204,12 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       conversation = await saveState(conversation_id, state);
     } else {
       const pendingAppointment = state.pending_appointment; // non-null inside this block
+      if (content === 'confirm_yes' || content === 'confirm_change') {
+        log('info', 'chat.confirmation_button_input', {
+          conversation_id,
+          input: content,
+        });
+      }
       let confirmation = classifyConfirmation(content);
       if (confirmation === 'yes' && !isAppointmentDataComplete(pendingAppointment)) {
         confirmation = 'ambiguous';
@@ -236,43 +224,60 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
         canPersistBooking,
       });
 
-    if (canPersistBooking) {
-      // Patient confirmed — resolve lead, then create or reschedule.
-      const localLead = await ensureLead(effectiveContactId);
-      await updateConversation(conversation_id, { lead_id: localLead.id });
-
-      const isReschedule = !!state.reschedule_target_id;
-      let confirmReply: string;
-
-      if (isReschedule) {
+      if (canPersistBooking) {
         try {
-          log('info', 'event.appointment_reschedule', {
-            conversation_id,
-            contact_id: effectiveContactId,
-          });
-          await executeReschedule({
-            oldRequestId: state.reschedule_target_id!,
-            contactId: effectiveContactId,
-            conversationId: conversation_id,
-            leadId: localLead.id,
-            appointment: pendingAppointment,
-          });
-          confirmReply =
-            '¡Listo! Tu cita anterior ha sido cancelada y la nueva solicitud ha quedado registrada. ' +
-            'Nuestro equipo se pondrá en contacto contigo para confirmar el nuevo horario. ' +
-            '¿Hay algo más en lo que pueda ayudarte?';
-        } catch (err: unknown) {
-          // Old request was closed between selection and confirmation (e.g. staff acted).
-          // Graceful fallback: create a fresh request so the patient is not left stranded.
-          log('error', 'chat.reschedule_failed', {
-            conversation_id,
-            old_request_id: state.reschedule_target_id,
-            error: err instanceof Error ? err.message : err,
-          });
+        // Patient confirmed — resolve lead, then create or reschedule.
+        const localLead = await ensureLead(effectiveContactId);
+        await updateConversation(conversation_id, { lead_id: localLead.id });
+
+        const isReschedule = !!state.reschedule_target_id;
+        let confirmReply: string;
+
+        if (isReschedule) {
+          try {
+            log('info', 'event.appointment_reschedule', {
+              conversation_id,
+              contact_id: effectiveContactId,
+            });
+            await executeReschedule({
+              oldRequestId: state.reschedule_target_id!,
+              contactId: effectiveContactId,
+              conversationId: conversation_id,
+              leadId: localLead.id,
+              appointment: pendingAppointment,
+            });
+            confirmReply =
+              '¡Listo! Tu solicitud anterior ha sido cancelada y la nueva solicitud ha quedado registrada. ' +
+              'Nuestro equipo se pondrá en contacto contigo para confirmar disponibilidad y horario. ' +
+              '¿Hay algo más en lo que pueda ayudarte?';
+          } catch (err: unknown) {
+            // Old request was closed between selection and confirmation (e.g. staff acted).
+            // Graceful fallback: create a fresh request so the patient is not left stranded.
+            log('error', 'chat.reschedule_failed', {
+              conversation_id,
+              old_request_id: state.reschedule_target_id,
+              error: err instanceof Error ? err.message : err,
+            });
+            log('info', 'event.appointment_request_created', {
+              conversation_id,
+              contact_id: effectiveContactId,
+              path: 'confirmation_reschedule_fallback',
+            });
+            await createRequest({
+              contactId: effectiveContactId,
+              conversationId: conversation_id,
+              leadId: localLead.id,
+              appointment: pendingAppointment,
+            });
+            confirmReply =
+              'La solicitud anterior ya fue gestionada por el equipo. He registrado una nueva solicitud con tus preferencias actualizadas. ' +
+              'Te contactaremos en horario de atención para revisarla contigo. ¿Hay algo más en lo que pueda ayudarte?';
+          }
+        } else {
           log('info', 'event.appointment_request_created', {
             conversation_id,
             contact_id: effectiveContactId,
-            path: 'confirmation_reschedule_fallback',
+            path: 'confirmation_intercept',
           });
           await createRequest({
             contactId: effectiveContactId,
@@ -281,110 +286,146 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
             appointment: pendingAppointment,
           });
           confirmReply =
-            'Tu cita original ya fue gestionada por el equipo. He registrado una nueva solicitud con tus nuevas preferencias. ' +
-            'Te contactaremos en horario de atención para confirmar. ¿Hay algo más en lo que pueda ayudarte?';
+            '¡Perfecto! Tu solicitud ha quedado registrada. Nuestro equipo te contactará en horario de atención para confirmar disponibilidad. ¿Hay algo más en lo que pueda ayudarte?';
         }
-      } else {
-        log('info', 'event.appointment_request_created', {
+
+        // Clear ALL confirmation + reschedule state.
+        state.awaiting_confirmation = false;
+        state.pending_appointment = null;
+        state.confirmation_attempts = 0;
+        state.confirmation_prompt_at = null;
+        state.appointment_request_open = true;
+        state.completed = true;
+        state.reschedule_phase = 'idle';
+        state.reschedule_target_id = null;
+        state.reschedule_target_summary = null;
+
+        const aiMessage = await insertMessage({
+          conversation_id, role: 'ai', content: confirmReply,
+          metadata: { type: isReschedule ? 'reschedule_confirmed' : 'appointment_confirmed', classifier_result: 'yes', path: 'confirmation_intercept' },
+        });
+        const finalConversation = await saveState(conversation_id, state);
+        log('info', 'chat.confirmation_success', {
           conversation_id,
-          contact_id: effectiveContactId,
-          path: 'confirmation_intercept',
+          is_reschedule: isReschedule,
+          awaiting_confirmation: state.awaiting_confirmation,
+          appointment_request_open: state.appointment_request_open,
+          completed: state.completed,
         });
-        await createRequest({
-          contactId: effectiveContactId,
-          conversationId: conversation_id,
-          leadId: localLead.id,
-          appointment: pendingAppointment,
-        });
-        confirmReply =
-          '¡Perfecto! Tu solicitud ha quedado registrada. Nuestro equipo te contactará en horario de atención para confirmar disponibilidad. ¿Hay algo más en lo que pueda ayudarte?';
+        return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+        } catch (err) {
+          log('error', 'chat.confirmation_success_path_failed', {
+            conversation_id,
+            error: err instanceof Error ? err.message : err,
+          });
+          const fallbackMessage = await insertMessage({
+            conversation_id,
+            role: 'ai',
+            content:
+              'No he podido completar la confirmación ahora mismo. ' +
+              'Si quieres, vuelve a intentarlo en unos segundos o espera al equipo.',
+            metadata: { type: 'confirmation_persist_fallback', path: 'confirmation_intercept' },
+          });
+          return { message: fallbackMessage, contact, conversation, turnResult: null };
+        }
       }
 
-      // Clear ALL confirmation + reschedule state.
-      state.awaiting_confirmation = false;
-      state.pending_appointment = null;
-      state.confirmation_attempts = 0;
-      state.confirmation_prompt_at = null;
-      state.appointment_request_open = true;
-      state.completed = true;
-      state.reschedule_phase = 'idle';
-      state.reschedule_target_id = null;
-      state.reschedule_target_summary = null;
+      if (confirmation === 'no') {
+        // Patient declined — clear all confirmation + reschedule state.
+        const wasReschedule = !!state.reschedule_target_id;
+        state.awaiting_confirmation = false;
+        state.pending_appointment = null;
+        state.confirmation_attempts = 0;
+        state.confirmation_prompt_at = null;
+        state.reschedule_phase = 'idle';
+        state.reschedule_target_id = null;
+        state.reschedule_target_summary = null;
+        const declineReply = wasReschedule
+          ? 'Entendido, dejamos tu solicitud tal como está. ¿Hay algo más en lo que pueda ayudarte?'
+          : 'Entendido. ¿Qué dato te gustaría cambiar? Dime la fecha, la hora o el servicio que prefieres y lo actualizo.';
+        const aiMessage = await insertMessage({
+          conversation_id, role: 'ai', content: declineReply,
+          metadata: { type: wasReschedule ? 'reschedule_declined' : 'appointment_declined', classifier_result: 'no', path: 'confirmation_intercept' },
+        });
+        const finalConversation = await saveState(conversation_id, state);
+        return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+      }
 
+      // ambiguous — re-ask, and escalate after two failed attempts.
+      const attempts = (state.confirmation_attempts ?? 0) + 1;
+      state.confirmation_attempts = attempts;
+
+      if (attempts >= 2) {
+        log('warn', 'chat.confirmation_escalated', { conversation_id, attempts });
+        state.awaiting_confirmation = false;
+        state.pending_appointment = null;
+        state.confirmation_attempts = 0;
+        state.confirmation_prompt_at = null;
+        state.reschedule_phase = 'idle';
+        state.reschedule_target_id = null;
+        state.reschedule_target_summary = null;
+        state.escalated = true;
+        state.escalation_reason = 'Patient could not confirm appointment after 2 attempts.';
+        await createHandoff({
+          conversationId: conversation_id,
+          contactId: effectiveContactId,
+          escalation: { shouldEscalate: true, reason: state.escalation_reason, type: 'human' },
+          triggerMessageId: patientMessage.id,
+        });
+        log('info', 'event.handoff_created', {
+          conversation_id,
+          contact_id: effectiveContactId,
+          path: 'confirmation_escalation',
+        });
+        const escalateReply =
+          'No me ha quedado claro si quieres confirmar tu solicitud. Voy a conectarte con un miembro de nuestro equipo para que puedan ayudarte directamente.';
+        const aiMessage = await insertMessage({
+          conversation_id, role: 'ai', content: escalateReply,
+          metadata: { type: 'confirmation_escalated', classifier_result: 'ambiguous', path: 'confirmation_intercept' },
+        });
+        const finalConversation = await saveState(conversation_id, state);
+        return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+      }
+
+      // Ask again.
+      const clarifyReply =
+        'Antes de confirmar: ¿quieres cambiar algo o confirmamos tal cual? Responde "sí" para registrar la solicitud o "no" si quieres ajustar fecha, hora o servicio.';
       const aiMessage = await insertMessage({
-        conversation_id, role: 'ai', content: confirmReply,
-        metadata: { type: isReschedule ? 'reschedule_confirmed' : 'appointment_confirmed', classifier_result: 'yes', path: 'confirmation_intercept' },
+        conversation_id, role: 'ai', content: clarifyReply,
+        metadata: {
+          type: 'awaiting_confirmation',
+          attempts,
+          classifier_result: 'ambiguous',
+          path: 'confirmation_intercept',
+          options: [
+            { label: 'Confirmar', value: 'confirm_yes' },
+            { label: 'Cambiar datos', value: 'confirm_change' },
+          ],
+        },
       });
       const finalConversation = await saveState(conversation_id, state);
       return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
     }
-
-    if (confirmation === 'no') {
-      // Patient declined — clear all confirmation + reschedule state.
-      const wasReschedule = !!state.reschedule_target_id;
-      state.awaiting_confirmation = false;
-      state.pending_appointment = null;
-      state.confirmation_attempts = 0;
-      state.confirmation_prompt_at = null;
-      state.reschedule_phase = 'idle';
-      state.reschedule_target_id = null;
-      state.reschedule_target_summary = null;
-      const declineReply = wasReschedule
-        ? 'Entendido, tu solicitud de cita se queda como estaba. ¿Hay algo más en lo que pueda ayudarte?'
-        : 'Entendido. ¿Qué dato te gustaría cambiar? Dime la fecha, la hora o el servicio que prefieres y lo actualizo.';
-      const aiMessage = await insertMessage({
-        conversation_id, role: 'ai', content: declineReply,
-        metadata: { type: wasReschedule ? 'reschedule_declined' : 'appointment_declined', classifier_result: 'no', path: 'confirmation_intercept' },
-      });
-      const finalConversation = await saveState(conversation_id, state);
-      return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
-    }
-
-    // ambiguous — re-ask, and escalate after two failed attempts.
-    const attempts = (state.confirmation_attempts ?? 0) + 1;
-    state.confirmation_attempts = attempts;
-
-    if (attempts >= 2) {
-      log('warn', 'chat.confirmation_escalated', { conversation_id, attempts });
-      state.awaiting_confirmation = false;
-      state.pending_appointment = null;
-      state.confirmation_attempts = 0;
-      state.confirmation_prompt_at = null;
-      state.reschedule_phase = 'idle';
-      state.reschedule_target_id = null;
-      state.reschedule_target_summary = null;
-      state.escalated = true;
-      state.escalation_reason = 'Patient could not confirm appointment after 2 attempts.';
-      await createHandoff({
-        conversationId: conversation_id,
-        contactId: effectiveContactId,
-        escalation: { shouldEscalate: true, reason: state.escalation_reason, type: 'human' },
-        triggerMessageId: patientMessage.id,
-      });
-      log('info', 'event.handoff_created', {
+    } catch (err) {
+      log('error', 'chat.confirmation_intercept_failed', {
         conversation_id,
-        contact_id: effectiveContactId,
-        path: 'confirmation_escalation',
+        error: err instanceof Error ? err.message : err,
       });
-      const escalateReply =
-        'No me ha quedado claro si quieres confirmar tu solicitud. Voy a conectarte con un miembro de nuestro equipo para que puedan ayudarte directamente.';
-      const aiMessage = await insertMessage({
-        conversation_id, role: 'ai', content: escalateReply,
-        metadata: { type: 'confirmation_escalated', classifier_result: 'ambiguous', path: 'confirmation_intercept' },
-      });
-      const finalConversation = await saveState(conversation_id, state);
-      return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
-    }
-
-    // Ask again.
-    const clarifyReply =
-      'Antes de confirmar: ¿quieres cambiar algo o confirmamos tal cual? Responde "sí" para registrar la solicitud o "no" si quieres ajustar fecha, hora o servicio.';
-    const aiMessage = await insertMessage({
-      conversation_id, role: 'ai', content: clarifyReply,
-      metadata: { type: 'awaiting_confirmation', attempts, classifier_result: 'ambiguous', path: 'confirmation_intercept' },
-    });
-    const finalConversation = await saveState(conversation_id, state);
-    return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+      try {
+        const fallbackMessage = await insertMessage({
+          conversation_id,
+          role: 'ai',
+          content:
+            'No he podido completar la confirmación ahora mismo. ' +
+            'Si quieres, vuelve a intentarlo en unos segundos o espera al equipo.',
+          metadata: { type: 'confirmation_intercept_fallback', path: 'confirmation_intercept' },
+        });
+        return { message: fallbackMessage, contact, conversation, turnResult: null };
+      } catch {
+        throw AppError.conflict(
+          'No he podido completar la confirmación ahora mismo. Inténtalo de nuevo en unos segundos.',
+        );
+      }
     }
   }
 
@@ -402,13 +443,13 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       state.reschedule_target_summary = null;
       delete meta.reschedule_options;
       delete meta.reschedule_options_count;
-      const reply = 'Entendido, dejamos las citas como están. ¿Hay algo más en lo que pueda ayudarte?';
+      const reply = 'Entendido, dejamos las solicitudes como están. ¿Hay algo más en lo que pueda ayudarte?';
       const aiMsg = await insertMessage({ conversation_id, role: 'ai', content: reply, metadata: { type: 'reschedule_aborted' } });
       return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
     }
 
     if (selection === 'ambiguous') {
-      const reply = 'No lo he entendido. Dime el número de la cita que quieres cambiar, o "cancelar" si prefieres dejarlo.';
+      const reply = 'No lo he entendido. Dime el número de la solicitud que quieres cambiar, o "cancelar" si prefieres dejarlo.';
       const aiMsg = await insertMessage({ conversation_id, role: 'ai', content: reply, metadata: { type: 'reschedule_selection_retry' } });
       return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
     }
@@ -417,7 +458,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     const options = (meta.reschedule_options as Array<{ id: string; summary: string }>) ?? [];
     const chosen = options[selection - 1];
     if (!chosen) {
-      const reply = `Solo tienes ${options.length} cita(s) pendiente(s). Dime el número correcto o "cancelar".`;
+      const reply = `Solo tienes ${options.length} solicitud(es) pendiente(s). Dime el número correcto o "cancelar".`;
       const aiMsg = await insertMessage({ conversation_id, role: 'ai', content: reply, metadata: { type: 'reschedule_selection_out_of_range' } });
       return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
     }
@@ -433,7 +474,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     delete meta.reschedule_options;
     delete meta.reschedule_options_count;
 
-    const reply = `Perfecto, vamos a cambiar tu solicitud de cita de ${chosen.summary}.\n\n¿Para cuándo te gustaría la nueva? Dime el servicio, fecha y horario que prefieras.`;
+    const reply = `Perfecto, vamos a ajustar tu solicitud (${chosen.summary}).\n\n¿Para cuándo la prefieres? Dime servicio, fecha y horario.`;
     const aiMsg = await insertMessage({ conversation_id, role: 'ai', content: reply, metadata: { type: 'reschedule_target_locked', target_id: chosen.id } });
     return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
   }
@@ -638,24 +679,37 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   // 12. Execute side-effects
   let updatedContact = contact;
 
-  const hasPatientFields = turnResult.rawOutput.patient_fields &&
-    Object.values(turnResult.rawOutput.patient_fields).some(v => v !== null && v !== undefined);
+  const hasAnyPatientFields = (fields: typeof turnResult.rawOutput.patient_fields) =>
+    !!fields && Object.values(fields).some(v => v !== null && v !== undefined);
 
-  // Fallback name extraction: if the LLM didn't populate full_name but the
-  // patient's message contains a recognisable "me llamo X" pattern, inject it.
-  if (!turnResult.rawOutput.patient_fields?.full_name && !state.patient.full_name) {
-    const fallbackName = extractNameFallback(content);
-    if (fallbackName) {
-      turnResult.rawOutput.patient_fields = {
-        ...turnResult.rawOutput.patient_fields,
-        full_name: fallbackName,
-      };
-      turnResult.state.patient = { ...turnResult.state.patient, full_name: fallbackName };
-      log('info', 'chat.name_fallback_applied', { fallbackName, conversation_id });
+  // Intake guards (success path): if the LLM parsed correctly but left a
+  // structured field null, inject the value deterministically from the message.
+  if (!turnResult.rawOutput.patient_fields?.full_name && !turnResult.state.patient.full_name) {
+    const name = extractNameGuard(content);
+    if (name) {
+      turnResult.rawOutput.patient_fields = { ...turnResult.rawOutput.patient_fields, full_name: name };
+      turnResult.state.patient = { ...turnResult.state.patient, full_name: name };
+      log('info', 'chat.name_guard_applied', { name, conversation_id });
+    }
+  }
+  if (!turnResult.rawOutput.patient_fields?.phone && !turnResult.state.patient.phone) {
+    const phone = extractPhoneGuard(content);
+    if (phone) {
+      turnResult.rawOutput.patient_fields = { ...turnResult.rawOutput.patient_fields, phone };
+      turnResult.state.patient = { ...turnResult.state.patient, phone };
+      log('info', 'chat.phone_guard_applied', { conversation_id });
+    }
+  }
+  if (!turnResult.rawOutput.patient_fields?.email && !turnResult.state.patient.email) {
+    const email = extractEmailGuard(content);
+    if (email) {
+      turnResult.rawOutput.patient_fields = { ...turnResult.rawOutput.patient_fields, email };
+      turnResult.state.patient = { ...turnResult.state.patient, email };
+      log('info', 'chat.email_guard_applied', { conversation_id });
     }
   }
 
-  if (hasPatientFields || turnResult.rawOutput.patient_fields?.full_name) {
+  if (hasAnyPatientFields(turnResult.rawOutput.patient_fields)) {
     const enriched = await enrichContact(effectiveContactId, turnResult.rawOutput.patient_fields);
     if (enriched) {
       if (enriched.id !== effectiveContactId) {
@@ -695,7 +749,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
           'la hora o el servicio, dímelo y preparo una nueva solicitud con la preferencia correcta.';
       } else {
         turnResult.reply =
-          'No encuentro ninguna cita pendiente asociada a tu cuenta. ¿Te gustaría enviar una nueva solicitud de cita?';
+          'No encuentro ninguna solicitud pendiente asociada a tu cuenta. ¿Te gustaría enviar una nueva solicitud de cita?';
         turnResult.state.current_intent = 'appointment_request';
       }
     } else if (openRequests.length === 1) {
@@ -717,7 +771,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       (turnResult.state.metadata as Record<string, unknown>).reschedule_options_count = options.length;
       const listText = options.map((opt, i) => `${i + 1}. ${opt.summary}`).join('\n');
       turnResult.reply =
-        `Tienes varias citas pendientes:\n\n${listText}\n\n¿Cuál quieres cambiar? Dime el número.`;
+        `Tienes varias solicitudes pendientes:\n\n${listText}\n\n¿Cuál quieres cambiar? Dime el número.`;
     }
   }
 
@@ -1074,6 +1128,15 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       next_action: turnResult.rawOutput.next_action,
       escalated: turnResult.escalation.shouldEscalate,
       fallback_applied: turnResult.fallback.applied,
+      ...(turnResult.state.awaiting_confirmation
+        ? {
+            type: 'awaiting_confirmation',
+            options: [
+              { label: 'Confirmar', value: 'confirm_yes' },
+              { label: 'Cambiar datos', value: 'confirm_change' },
+            ],
+          }
+        : {}),
     },
   });
 
@@ -1117,6 +1180,7 @@ function buildConfirmationSummary(
 ): string {
   const lines: string[] = ['Antes de registrar tu solicitud, estos son los datos:'];
   if (patient.full_name) lines.push(`• Nombre: ${patient.full_name}`);
+  if (patient.phone) lines.push(`• Teléfono: ${patient.phone}`);
   if (appointment.service_type) lines.push(`• Servicio: ${appointment.service_type}`);
   if (appointment.preferred_date) lines.push(`• Fecha preferida: ${appointment.preferred_date}`);
   if (appointment.preferred_time) lines.push(`• Horario: ${appointment.preferred_time}`);
@@ -1180,8 +1244,8 @@ function buildRescheduleConfirmationSummary(
   newAppointment: import('@/lib/conversation/schema').ConversationState['appointment'],
 ): string {
   const lines: string[] = ['Antes de hacer el cambio, confirma los datos:'];
-  lines.push(`\nCita actual: ${oldSummary}`);
-  lines.push('\nNueva cita:');
+  lines.push(`\nSolicitud actual: ${oldSummary}`);
+  lines.push('\nNueva solicitud:');
   if (patient.full_name) lines.push(`• Nombre: ${patient.full_name}`);
   if (newAppointment.service_type) lines.push(`• Servicio: ${newAppointment.service_type}`);
   if (newAppointment.preferred_date) lines.push(`• Fecha: ${newAppointment.preferred_date}`);

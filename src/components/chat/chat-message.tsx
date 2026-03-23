@@ -66,16 +66,10 @@ function AssistantStreamText({
   enabled: boolean;
   instant?: boolean;
 }) {
-  const [shown, setShown] = useState(
-    enabled && !instant ? 0 : text.length,
-  );
+  const [shown, setShown] = useState(0);
 
   useEffect(() => {
-    if (!enabled || instant) {
-      setShown(text.length);
-      return;
-    }
-    setShown(0);
+    if (!enabled || instant) return;
     const step = 4;
     const tickMs = 16;
     let i = 0;
@@ -91,6 +85,7 @@ function AssistantStreamText({
     return () => window.clearInterval(id);
   }, [text, enabled, instant]);
 
+  if (!enabled || instant) return <>{text}</>;
   return <>{text.slice(0, shown)}</>;
 }
 

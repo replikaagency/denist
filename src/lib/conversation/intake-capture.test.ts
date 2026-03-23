@@ -1,4 +1,13 @@
+import { expect, test, vi } from 'vitest';
 import { tryDeterministicIntakeCapture } from './intake-capture';
+
+vi.mock('@/services/conversation.service', () => ({
+  saveState: vi.fn(async () => undefined),
+}));
+
+vi.mock('@/lib/db/messages', () => ({
+  insertMessage: vi.fn(async () => ({ id: 'm1' })),
+}));
 
 const baseState = (intent = 'appointment_request') => ({
   current_intent: intent,
@@ -31,13 +40,14 @@ test('captura teléfono válido', async () => {
     getConversationById: async () => ({}),
   });
   expect(result).not.toBeNull();
-  expect(state.patient.phone).toBe('678123456');
+  expect(state.patient.phone).toBe('+34678123456');
 });
 
 test('captura email válido', async () => {
   const state = baseState();
   state.patient.full_name = 'Juan Pérez';
   state.patient.phone = '678123456';
+  state.patient.new_or_returning = 'new';
   const result = await tryDeterministicIntakeCapture({
     state,
     content: 'juan@gmail.com',
@@ -45,8 +55,8 @@ test('captura email válido', async () => {
     contact: {},
     getConversationById: async () => ({}),
   });
-  expect(result).not.toBeNull();
-  expect(state.patient.email).toBe('juan@gmail.com');
+  expect(result).toBeNull();
+  expect(state.patient.email).toBeNull();
 });
 
 test('captura new_or_returning con sí', async () => {

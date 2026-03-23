@@ -21,17 +21,17 @@ export function useRealtimeTable(
   },
 ) {
   const callbackRef = useRef(onPayload);
-  callbackRef.current = onPayload;
+  useEffect(() => {
+    callbackRef.current = onPayload;
+  }, [onPayload]);
 
   useEffect(() => {
     if (options?.enabled === false) return;
 
     const supabase = createSupabaseBrowserClient();
-    let channel: RealtimeChannel;
-
     const channelName = `realtime-${table}-${Date.now()}`;
 
-    channel = supabase.channel(channelName);
+    const channel: RealtimeChannel = supabase.channel(channelName);
 
     const subscribeConfig: {
       event: '*';
@@ -87,7 +87,9 @@ export function useRealtimeMessages(
   realtimeToken?: string | null,
 ) {
   const callbackRef = useRef(onNewMessage);
-  callbackRef.current = onNewMessage;
+  useEffect(() => {
+    callbackRef.current = onNewMessage;
+  }, [onNewMessage]);
 
   // Set custom JWT for Realtime before subscribing (patient chat flow).
   // Must run before the subscription effect.

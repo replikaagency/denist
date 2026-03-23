@@ -45,13 +45,16 @@ export default async function DashboardPage({
 
   // Merge last message preview into conversation rows
   const conversationsWithPreview = (data ?? []).map((conv) => {
-    const c = conv as { id: string; metadata?: Record<string, unknown> };
+    const c = conv as {
+      id: string;
+      metadata?: { conversation_state?: { awaiting_confirmation?: boolean } };
+    };
     const preview = lastMessageMap[c.id] ?? null;
     return {
       ...conv,
       last_message_preview: preview?.content ?? null,
       last_message_role: preview?.role ?? null,
-      awaiting_confirmation: (c.metadata as any)?.conversation_state?.awaiting_confirmation ?? false,
+      awaiting_confirmation: c.metadata?.conversation_state?.awaiting_confirmation ?? false,
     };
   });
 

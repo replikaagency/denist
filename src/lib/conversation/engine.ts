@@ -422,8 +422,8 @@ function applyValidatedCorrections(
     return state;
   }
 
-  let appointment = { ...state.appointment };
-  let symptoms    = { ...state.symptoms };
+  const appointment = { ...state.appointment };
+  const symptoms    = { ...state.symptoms };
   const newLogEntries: CorrectionLogEntry[] = [];
 
   for (const field of output.correction_fields) {

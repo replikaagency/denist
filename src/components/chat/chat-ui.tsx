@@ -9,6 +9,13 @@ import { ChatMessage, type Message } from "@/components/chat/chat-message";
 import { useRealtimeMessages } from "@/hooks/use-realtime";
 
 const SESSION_TOKEN_KEY = "dental_ai_session_token";
+type MessageOption = { label: string; value: string };
+type MessageWithMetadata = Message & {
+  metadata?: {
+    type?: string;
+    options?: MessageOption[];
+  };
+};
 
 function getOrCreateSessionToken(): string {
   if (typeof window === "undefined") return "";
@@ -40,7 +47,7 @@ function computeAssistantRevealDelayMs(content: string, reducedMotion: boolean):
 }
 
 export function ChatUI() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<MessageWithMetadata[]>([]);
   const [input, setInput] = useState("");
   const [httpPending, setHttpPending] = useState(false);
   const [canShowTypingAfterUser, setCanShowTypingAfterUser] = useState(false);
@@ -59,7 +66,8 @@ export function ChatUI() {
   const sessionTokenRef = useRef("");
   const seenIdsRef = useRef<Set<string>>(new Set());
   const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingRevealMsgRef = useRef<Message | null>(null);
+  const pendingRevealMsgRef = useRef<MessageWithMetadata | null>(null);
+  const optionClickLockRef = useRef(false);
 
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
   useEffect(() => {
@@ -166,6 +174,7 @@ export function ChatUI() {
           | "staff",
         content: m.content as string,
         timestamp: getTime(),
+        metadata: m.metadata as { type?: string; options?: MessageOption[] } | undefined,
       }));
 
       for (const m of incoming) {
@@ -243,8 +252,8 @@ export function ChatUI() {
     ]);
   }, realtimeToken);
 
-  async function sendMessage() {
-    const trimmed = input.trim();
+  async function sendMessage(overrideContent?: string) {
+    const trimmed = (overrideContent ?? input).trim();
     if (!trimmed || isChatBusy || !conversationId) return;
 
     const userMsg: Message = {
@@ -276,17 +285,19 @@ export function ChatUI() {
       if (!json.ok) {
         setError(json.error?.message ?? "No se ha podido enviar el mensaje");
         setHttpPending(false);
+        optionClickLockRef.current = false;
         pendingRevealMsgRef.current = null;
         return;
       }
 
-      const aiMsg: Message = {
+      const aiMsg: MessageWithMetadata = {
         id: json.data.message.id,
         role: "assistant",
         content: json.data.message.content,
         timestamp: getTime(),
         animateEnter: true,
         streamReveal: true,
+        metadata: json.data.message.metadata as { type?: string; options?: MessageOption[] } | undefined,
       };
 
       seenIdsRef.current.add(json.data.message.id as string);
@@ -308,6 +319,7 @@ export function ChatUI() {
         pendingRevealMsgRef.current = null;
         setMessages((prev) => [...prev, aiMsg]);
         setAwaitingReveal(false);
+        optionClickLockRef.current = false;
       } else {
         setAwaitingReveal(true);
         if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
@@ -317,11 +329,13 @@ export function ChatUI() {
           setMessages((prev) => [...prev, aiMsg]);
           setAwaitingReveal(false);
         }, delayMs);
+        optionClickLockRef.current = false;
       }
     } catch (err) {
       setError("Error de conexión. Por favor, inténtalo de nuevo.");
       setHttpPending(false);
       setAwaitingReveal(false);
+      optionClickLockRef.current = false;
       pendingRevealMsgRef.current = null;
       if (revealTimerRef.current) {
         clearTimeout(revealTimerRef.current);
@@ -384,9 +398,40 @@ export function ChatUI() {
             </div>
           )}
 
-          {messages.map((msg) => (
-            <ChatMessage key={msg.id} message={msg} reduceMotion={prefersReducedMotion} />
-          ))}
+          {messages.map((msg) => {
+            const options =
+              msg.role === "assistant" &&
+              msg.metadata?.type === "awaiting_confirmation" &&
+              Array.isArray(msg.metadata?.options)
+                ? msg.metadata.options
+                : [];
+            return (
+              <div key={msg.id} className="flex flex-col gap-2">
+                <ChatMessage message={msg} reduceMotion={prefersReducedMotion} />
+                {options.length > 0 && (
+                  <div className="ml-11 flex flex-wrap gap-2">
+                    {options.map((opt) => (
+                      <Button
+                        key={`${msg.id}-${opt.value}`}
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        disabled={isChatBusy || initializing || !conversationId || optionClickLockRef.current}
+                        onClick={() => {
+                          if (isChatBusy || initializing || !conversationId || optionClickLockRef.current) return;
+                          optionClickLockRef.current = true;
+                          sendMessage(opt.value);
+                        }}
+                      >
+                        {opt.label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
 
           {showHandoffNotify && (
             <div
