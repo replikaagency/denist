@@ -46,6 +46,50 @@ export type FastBookingDetails = {
   preferred_time?: string;
   new_or_returning?: 'new' | 'returning';
 };
+
+/** Canonical `appointment.preferred_date` when the patient wants the first available slot. */
+export const EARLIEST_AVAILABLE_PREFERRED_DATE = 'earliest_available';
+
+export type OpenAvailabilityPreferenceKind = 'earliest_slot' | 'flexible_time_only';
+
+/**
+ * Detect open / ASAP availability intent (deterministic; do not rely on the LLM).
+ * - earliest_slot → map to canonical date + flexible time
+ * - flexible_time_only → any hour / indifferent to time (when asking for time)
+ */
+export function extractOpenAvailabilityPreference(message: string): OpenAvailabilityPreferenceKind | null {
+  const trimmed = message.trim();
+  if (!trimmed) return null;
+  const norm = removeDiacritics(trimmed.toLowerCase());
+
+  if (
+    /\bme\s+da\s+igual\s+(la\s+)?hora\b/.test(norm) ||
+    /\bme\s+es\s+igual\s+(la\s+)?hora\b/.test(norm) ||
+    /\bcualquier\s+hora\b/.test(norm) ||
+    /\bda\s+igual\s+(la\s+)?hora\b/.test(norm)
+  ) {
+    return 'flexible_time_only';
+  }
+
+  if (
+    /\bprimera\s+disponib/.test(norm) ||
+    /\blo\s+antes\s+posible\b/.test(norm) ||
+    /\bcuanto\s+antes\b/.test(norm) ||
+    /\bcuando\s+haya\s+hueco\b/.test(norm) ||
+    /\bcualquier\s+dia\b/.test(norm) ||
+    /\bcualquier\s+momento\b/.test(norm) ||
+    /\bcuando\s+pueda\b/.test(norm) ||
+    /\bcuando\s+puedan\b/.test(norm) ||
+    /\blo\s+primero\s+que\s+(pueda|haya)\b/.test(norm) ||
+    /\bprimer\s+hueco\b/.test(norm) ||
+    /\bprimer\s+agujero\b/.test(norm) ||
+    /\b(en\s+cuanto\s+)?antes\s+posible\b/.test(norm)
+  ) {
+    return 'earliest_slot';
+  }
+
+  return null;
+}
 /**
  * Dental Reception AI — Deterministic Intake Guards
  *
@@ -243,6 +287,10 @@ export function extractTimePreferenceGuard(message: string): TimePreferenceGuard
   if (norm === 'time_afternoon') return { kind: 'value', value: 'afternoon' };
   if (norm === 'time_exact') return { kind: 'ask_exact' };
 
+  if (norm === 'flexible' || /\bhorario\s+flexible\b/.test(norm)) {
+    return { kind: 'value', value: 'flexible' };
+  }
+
   // Real-world shorthand like "mañana tarde" usually means date+time ("tomorrow afternoon").
   if (/\bmanana\b/.test(norm) && /\btarde\b/.test(norm) && !/\bpor\s+la\s+manana\b/.test(norm)) {
     return { kind: 'value', value: 'afternoon' };
@@ -334,6 +382,14 @@ export function extractFastBookingDetails(message: string): FastBookingDetails {
 
   const status = extractNewOrReturningGuard(trimmed);
   if (status) details.new_or_returning = status;
+
+  const openAvail = extractOpenAvailabilityPreference(trimmed);
+  if (openAvail === 'earliest_slot') {
+    details.preferred_date = EARLIEST_AVAILABLE_PREFERRED_DATE;
+    details.preferred_time = 'flexible';
+  } else if (openAvail === 'flexible_time_only') {
+    details.preferred_time = 'flexible';
+  }
 
   return details;
 }

@@ -36,6 +36,7 @@ vi.mock('@/lib/db/hybrid-bookings', () => ({
 
 vi.mock('./contact.service', () => ({
   enrichContact: () => Promise.resolve(null),
+  resolvePatientIdentityAfterPhoneCapture: async (_p: unknown, _cid: string, c: unknown) => c,
 }));
 
 vi.mock('./lead.service', () => ({
@@ -88,10 +89,14 @@ vi.mock('@/lib/conversation/prompts', () => ({
   FEW_SHOT_BY_INTENT: {},
 }));
 
-vi.mock('@/lib/conversation/fields', () => ({
-  getMissingFields: (...args: unknown[]) => getMissingFieldsMock(...args),
-  getNextFieldPrompt: (...args: unknown[]) => getNextFieldPromptMock(...args),
-}));
+vi.mock('@/lib/conversation/fields', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/conversation/fields')>();
+  return {
+    ...actual,
+    getMissingFields: (...args: unknown[]) => getMissingFieldsMock(...args),
+    getNextFieldPrompt: (...args: unknown[]) => getNextFieldPromptMock(...args),
+  };
+});
 
 vi.mock('@/lib/conversation/engine', () => ({
   processTurn: vi.fn(() => ({ error: 'forced-test-parse-error' })),
@@ -777,7 +782,9 @@ describe('processChatMessage', () => {
     ]);
   });
 
-  it('enters quick booking flow and asks next required field', async () => {
+  it('enters quick booking flow and shows 1/2 path choice', async () => {
+    const prevSelfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL;
+    process.env.BOOKING_SELF_SERVICE_URL = 'https://cal.example.com/book';
     const state = createInitialState('conv1');
     state.current_intent = null;
     state.patient.full_name = null;
@@ -788,10 +795,6 @@ describe('processChatMessage', () => {
     state.appointment.preferred_time = null;
 
     vi.mocked(conversationService.loadState).mockResolvedValue(state);
-    getNextFieldPromptMock.mockReturnValue({
-      field: 'patient.full_name',
-      prompt: '¿Me dices tu nombre completo?',
-    });
 
     await processChatMessage({
       session_token: 'sess1',
@@ -799,12 +802,14 @@ describe('processChatMessage', () => {
       content: 'quick_booking_start',
     });
 
-    const quickInsert = insertMessageMock.mock.calls
+    const choiceInsert = insertMessageMock.mock.calls
       .map(([payload]) => payload)
-      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_entry');
-    expect(quickInsert).toBeTruthy();
-    expect(quickInsert.content).toContain('¿Me dices tu nombre completo?');
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_path_choice');
+    expect(choiceInsert).toBeTruthy();
+    expect(choiceInsert.content).toContain('1. Elegir hora directamente');
+    expect(choiceInsert.content).toContain('2. Dejar preferencia para que recepción me contacte');
     expect(callLLM).not.toHaveBeenCalled();
+    process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
   });
 
   it('shows fast booking path choice when self-service URL is configured', async () => {
@@ -1001,16 +1006,12 @@ describe('processChatMessage', () => {
     expect(callLLM).not.toHaveBeenCalled();
   });
 
-  it('routes fast booking directly to request capture when self-service URL is missing', async () => {
+  it('skips 1/2 choice when self-service URL is missing (fast booking token → reception)', async () => {
     const prevSelfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL;
     delete process.env.BOOKING_SELF_SERVICE_URL;
     const state = createInitialState('conv1');
     state.current_intent = null;
     vi.mocked(conversationService.loadState).mockResolvedValue(state);
-    getNextFieldPromptMock.mockReturnValue({
-      field: 'patient.new_or_returning',
-      prompt: '¿Es la primera vez que vienes a la clínica o ya eres paciente nuestro/a?',
-    });
 
     await processChatMessage({
       session_token: 'sess1',
@@ -1018,14 +1019,15 @@ describe('processChatMessage', () => {
       content: 'quick_booking_fast',
     });
 
-    const quickChoiceInsert = insertMessageMock.mock.calls
+    const pathChoice = insertMessageMock.mock.calls.find(
+      ([payload]) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_path_choice',
+    );
+    expect(pathChoice).toBeUndefined();
+    const receptionInsert = insertMessageMock.mock.calls
       .map(([payload]) => payload)
-      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_path_choice');
-    expect(quickChoiceInsert).toBeFalsy();
-    const quickInsert = insertMessageMock.mock.calls
-      .map(([payload]) => payload)
-      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'patient_status_choice');
-    expect(quickInsert).toBeTruthy();
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_reception_entry');
+    expect(receptionInsert).toBeTruthy();
+    expect(receptionInsert?.content).toMatch(/día|franja/);
     expect(callLLM).not.toHaveBeenCalled();
     process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
   });
@@ -1095,16 +1097,12 @@ describe('processChatMessage', () => {
     expect(callLLM).not.toHaveBeenCalled();
   });
 
-  it('routes booking-entry text directly to reception capture when self-service URL is missing', async () => {
+  it('skips 1/2 choice when self-service URL is missing (booking-entry text → reception)', async () => {
     const prevSelfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL;
     delete process.env.BOOKING_SELF_SERVICE_URL;
     const state = createInitialState('conv1');
     state.current_intent = null;
     vi.mocked(conversationService.loadState).mockResolvedValue(state);
-    getNextFieldPromptMock.mockReturnValue({
-      field: 'patient.new_or_returning',
-      prompt: '¿Es la primera vez que vienes a la clínica o ya eres paciente nuestro/a?',
-    });
 
     await processChatMessage({
       session_token: 'sess1',
@@ -1112,19 +1110,20 @@ describe('processChatMessage', () => {
       content: 'necesito cita',
     });
 
-    const quickChoiceInsert = insertMessageMock.mock.calls
+    const pathChoice = insertMessageMock.mock.calls.find(
+      ([payload]) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_path_choice',
+    );
+    expect(pathChoice).toBeUndefined();
+    const receptionInsert = insertMessageMock.mock.calls
       .map(([payload]) => payload)
-      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_path_choice');
-    expect(quickChoiceInsert).toBeFalsy();
-    const quickInsert = insertMessageMock.mock.calls
-      .map(([payload]) => payload)
-      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'patient_status_choice');
-    expect(quickInsert).toBeTruthy();
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_reception_entry');
+    expect(receptionInsert).toBeTruthy();
+    expect(receptionInsert?.content).toMatch(/día|franja/);
     expect(callLLM).not.toHaveBeenCalled();
     process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
   });
 
-  it('hydrates patient identity from contact to avoid re-asking full_name/phone', async () => {
+  it('hydrates patient identity from contact and skips 1/2 when self-service URL is missing', async () => {
     const prevSelfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL;
     delete process.env.BOOKING_SELF_SERVICE_URL;
     const state = createInitialState('conv1');
@@ -1133,15 +1132,6 @@ describe('processChatMessage', () => {
     state.patient.phone = null;
     state.patient.new_or_returning = null;
     vi.mocked(conversationService.loadState).mockResolvedValue(state);
-    getNextFieldPromptMock.mockImplementation((_intent, filledFields) => {
-      const patient = (filledFields as { patient: { full_name: string | null; phone: string | null } }).patient;
-      expect(patient.full_name).toBe('Ana');
-      expect(patient.phone).toBe('+34111222333');
-      return {
-        field: 'patient.new_or_returning',
-        prompt: '¿Es la primera vez que vienes a la clínica o ya eres paciente nuestro/a?',
-      };
-    });
 
     await processChatMessage({
       session_token: 'sess1',
@@ -1149,10 +1139,14 @@ describe('processChatMessage', () => {
       content: 'quick_booking_start',
     });
 
-    const quickInsert = insertMessageMock.mock.calls
-      .map(([payload]) => payload)
-      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'patient_status_choice');
-    expect(quickInsert).toBeTruthy();
+    const pathChoice = insertMessageMock.mock.calls.find(
+      ([payload]) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_path_choice',
+    );
+    expect(pathChoice).toBeUndefined();
+    const aiAfterHydrate = insertMessageMock.mock.calls.find(
+      ([payload]) => payload?.role === 'ai',
+    )?.[0];
+    expect(aiAfterHydrate).toBeTruthy();
     expect(callLLM).not.toHaveBeenCalled();
     process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
   });

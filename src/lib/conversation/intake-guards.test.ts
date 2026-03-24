@@ -6,7 +6,10 @@ import {
   extractNewOrReturningGuard,
   extractTimePreferenceGuard,
   extractFastBookingDetails,
+  extractOpenAvailabilityPreference,
+  EARLIEST_AVAILABLE_PREFERRED_DATE,
 } from './intake-guards';
+import { isAppointmentDataComplete } from '@/services/appointment.service';
 
 // ---------------------------------------------------------------------------
 // Phone
@@ -109,6 +112,33 @@ describe('extractTimePreferenceGuard', () => {
     expect(extractTimePreferenceGuard('sobre las 17')).toEqual({ kind: 'value', value: 'a las 17' }));
   it('handles shorthand "mañana tarde" as afternoon preference', () =>
     expect(extractTimePreferenceGuard('mañana tarde')).toEqual({ kind: 'value', value: 'afternoon' }));
+  it('detects flexible / horario flexible', () =>
+    expect(extractTimePreferenceGuard('horario flexible')).toEqual({ kind: 'value', value: 'flexible' }));
+});
+
+describe('extractOpenAvailabilityPreference', () => {
+  it('detects primera disponible', () =>
+    expect(extractOpenAvailabilityPreference('la primera disponible')).toBe('earliest_slot'));
+  it('detects lo antes posible', () =>
+    expect(extractOpenAvailabilityPreference('lo antes posible')).toBe('earliest_slot'));
+  it('detects cuando haya hueco', () =>
+    expect(extractOpenAvailabilityPreference('cuando haya hueco')).toBe('earliest_slot'));
+  it('detects cualquier día', () =>
+    expect(extractOpenAvailabilityPreference('cualquier día me vale')).toBe('earliest_slot'));
+  it('detects me da igual la hora', () =>
+    expect(extractOpenAvailabilityPreference('me da igual la hora')).toBe('flexible_time_only'));
+});
+
+describe('isAppointmentDataComplete with earliest_available', () => {
+  it('accepts canonical earliest_available date + flexible time', () => {
+    expect(
+      isAppointmentDataComplete({
+        service_type: 'limpieza',
+        preferred_date: EARLIEST_AVAILABLE_PREFERRED_DATE,
+        preferred_time: 'flexible',
+      }),
+    ).toBe(true);
+  });
 });
 
 describe('extractFastBookingDetails', () => {
@@ -146,6 +176,13 @@ describe('extractFastBookingDetails', () => {
       phone: '+34666666666',
       service_type: 'limpieza',
       preferred_date: 'mañana',
+    });
+  });
+
+  it('maps open availability phrases to canonical date + flexible time', () => {
+    expect(extractFastBookingDetails('la primera disponible')).toMatchObject({
+      preferred_date: EARLIEST_AVAILABLE_PREFERRED_DATE,
+      preferred_time: 'flexible',
     });
   });
 });

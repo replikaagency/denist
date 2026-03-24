@@ -15,6 +15,30 @@
 
 import type { Intent } from "./taxonomy";
 
+/** Reception-style appointment_request: phone first, then name, then status, then scheduling. */
+export const APPOINTMENT_REQUEST_RECEPTION_FIELD_ORDER: FieldPath[] = [
+  "patient.phone",
+  "patient.full_name",
+  "patient.new_or_returning",
+  "appointment.service_type",
+  "appointment.preferred_date",
+  "appointment.preferred_time",
+];
+
+export type AppointmentRequestFieldOptions = {
+  receptionIntakePhoneFirst?: boolean;
+};
+
+export function fieldQueryOptionsFromState(state: {
+  current_intent?: Intent | null;
+  metadata?: Record<string, unknown>;
+}): AppointmentRequestFieldOptions {
+  if (state.current_intent !== "appointment_request") return {};
+  const m = state.metadata;
+  if (!m || m.reception_intake_phone_first !== true) return {};
+  return { receptionIntakePhoneFirst: true };
+}
+
 // ---------------------------------------------------------------------------
 // Field path type — dot-notation paths into ConversationState
 // ---------------------------------------------------------------------------
@@ -231,17 +255,32 @@ export const FIELD_REQUIREMENTS: Partial<Record<Intent, FieldRequirements>> = {
 // Helper: compute missing required fields for an intent
 // ---------------------------------------------------------------------------
 
+function orderMissingByFieldList(missing: FieldPath[], order: FieldPath[]): FieldPath[] {
+  return order.filter((f) => missing.includes(f));
+}
+
 export function getMissingFields(
   intent: Intent,
   filledFields: Record<string, unknown>,
+  opts?: AppointmentRequestFieldOptions,
 ): FieldPath[] {
   const reqs = FIELD_REQUIREMENTS[intent];
   if (!reqs) return [];
 
-  return reqs.required.filter((path) => {
+  const missing = reqs.required.filter((path) => {
     const value = getNestedValue(filledFields, path);
     return value === null || value === undefined || value === "";
   });
+
+  if (
+    intent === "appointment_request" &&
+    opts?.receptionIntakePhoneFirst &&
+    missing.length > 0
+  ) {
+    return orderMissingByFieldList(missing, APPOINTMENT_REQUEST_RECEPTION_FIELD_ORDER);
+  }
+
+  return missing;
 }
 
 /**
@@ -251,11 +290,12 @@ export function getMissingFields(
 export function getNextFieldPrompt(
   intent: Intent,
   filledFields: Record<string, unknown>,
+  opts?: AppointmentRequestFieldOptions,
 ): { field: FieldPath; prompt: string } | null {
   const reqs = FIELD_REQUIREMENTS[intent];
   if (!reqs) return null;
 
-  const missing = getMissingFields(intent, filledFields);
+  const missing = getMissingFields(intent, filledFields, opts);
   if (missing.length === 0) return null;
 
   const field = missing[0];

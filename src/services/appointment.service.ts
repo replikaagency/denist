@@ -10,6 +10,7 @@ import { advanceLeadStatus, getLeadById } from '@/lib/db/leads';
 import { updateConversation } from '@/lib/db/conversations';
 import type { AppointmentRequest, AppointmentType } from '@/types/database';
 import type { AppointmentDetails } from '@/lib/conversation/schema';
+import { EARLIEST_AVAILABLE_PREFERRED_DATE } from '@/lib/conversation/intake-guards';
 import { log } from '@/lib/logger';
 
 // ---------------------------------------------------------------------------
@@ -404,7 +405,10 @@ export function isAppointmentDataComplete(
 ): boolean {
   if (!appointment.service_type) return false;
   if (!normalizeTimeOfDay(appointment.preferred_time)) return false;
-  const hasDate = !!normalizePreferredDate(appointment.preferred_date);
+  const rawDate = appointment.preferred_date?.trim().toLowerCase() ?? '';
+  const hasDate =
+    !!normalizePreferredDate(appointment.preferred_date) ||
+    rawDate === EARLIEST_AVAILABLE_PREFERRED_DATE;
   const hasDays = Array.isArray(preferredDays) && preferredDays.length > 0;
   return hasDate || hasDays;
 }

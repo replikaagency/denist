@@ -7,6 +7,7 @@ import {
   findContactByEmailOrPhone,
   transferSessionTokenToCanonical,
 } from '@/lib/db/contacts';
+import { updateConversation } from '@/lib/db/conversations';
 import { normalizePhone } from '@/lib/phone';
 import type { Contact } from '@/types/database';
 import type { PatientFields } from '@/lib/conversation/schema';
@@ -101,6 +102,37 @@ export async function enrichContact(
   }
 
   return updateContact(contactId, patch);
+}
+
+/**
+ * After deterministic phone capture: look up canonical contact by normalized phone,
+ * hydrate patient state (name, safe returning status), and relink conversation when needed.
+ */
+export async function resolvePatientIdentityAfterPhoneCapture(
+  patient: PatientFields,
+  conversationId: string,
+  currentContact: Contact,
+): Promise<Contact> {
+  if (!patient.phone || !currentContact.id) return currentContact;
+
+  const existing = await findContactByPhone(patient.phone);
+  if (!existing) return currentContact;
+
+  if (!patient.full_name) {
+    const name = [existing.first_name, existing.last_name].filter(Boolean).join(' ').trim();
+    if (name) patient.full_name = name;
+  }
+  if (!patient.new_or_returning && existing.is_new_patient === false) {
+    patient.new_or_returning = 'returning';
+  }
+
+  if (existing.id !== currentContact.id) {
+    await transferSessionTokenToCanonical(currentContact.id, existing.id);
+    await updateConversation(conversationId, { contact_id: existing.id });
+    return existing;
+  }
+
+  return existing;
 }
 
 export { findContactBySessionToken };

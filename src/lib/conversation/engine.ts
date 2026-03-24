@@ -32,7 +32,7 @@ import {
   type CorrectionLogEntry,
   type CorrectionLogField,
 } from "./schema";
-import { getMissingFields, getNextFieldPrompt } from "./fields";
+import { getMissingFields, getNextFieldPrompt, fieldQueryOptionsFromState } from "./fields";
 import { LIMITS } from "@/config/constants";
 import { DECLINE_OFFER_FOLLOWUP_REPLY_ES, isPlainDecline } from "./confirmation";
 
@@ -612,11 +612,15 @@ function deriveFlowStage(state: ConversationState): ConversationFlowStage {
 
   if (!state.current_intent || !isScheduling) return 'non_scheduling';
 
-  const missing = getMissingFields(state.current_intent, {
-    patient: state.patient,
-    appointment: state.appointment,
-    symptoms: state.symptoms,
-  });
+  const missing = getMissingFields(
+    state.current_intent,
+    {
+      patient: state.patient,
+      appointment: state.appointment,
+      symptoms: state.symptoms,
+    },
+    fieldQueryOptionsFromState(state),
+  );
 
   return missing.length > 0 ? 'collecting' : 'ready';
 }
@@ -657,11 +661,15 @@ export function validateFlowAction(
     : `next_action '${output.next_action}' not permitted in stage '${stage}'`;
 
   const nextPrompt = state.current_intent
-    ? getNextFieldPrompt(state.current_intent, {
-        patient: state.patient,
-        appointment: state.appointment,
-        symptoms: state.symptoms,
-      })
+    ? getNextFieldPrompt(
+        state.current_intent,
+        {
+          patient: state.patient,
+          appointment: state.appointment,
+          symptoms: state.symptoms,
+        },
+        fieldQueryOptionsFromState(state),
+      )
     : null;
 
   const correctedAction: NextAction = nextPrompt ? 'ask_field' : 'continue';
@@ -859,6 +867,7 @@ export function processTurn(
     const missing = getMissingFields(
       newState.current_intent,
       { patient: newState.patient, appointment: newState.appointment, symptoms: newState.symptoms },
+      fieldQueryOptionsFromState(newState),
     );
     if (missing.length === 0) {
       newState.completed = true;
