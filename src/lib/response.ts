@@ -5,8 +5,8 @@
 
 import { NextResponse } from 'next/server';
 import type { ZodIssue } from 'zod/v4';
-import { AppError, isAppError } from './errors';
-import { log } from '@/lib/logger';
+import { isAppError } from './errors';
+import { extractDbErrorInfo, log } from '@/lib/logger';
 
 // ---------------------------------------------------------------------------
 // Response envelope types
@@ -55,7 +55,9 @@ export function errorResponse(
 export function handleRouteError(err: unknown): NextResponse<ApiError> {
   if (isAppError(err)) {
     if (err.statusCode >= 500) {
-      log('error', 'api.app_error', { code: err.code, status: err.statusCode });
+      const dbInfo =
+        err.code === 'DATABASE_ERROR' ? extractDbErrorInfo(err.details) : {};
+      log('error', 'api.app_error', { code: err.code, status: err.statusCode, ...dbInfo });
     }
     return errorResponse(err.code, err.message, err.statusCode);
   }
@@ -69,7 +71,7 @@ export function handleRouteError(err: unknown): NextResponse<ApiError> {
     if (pgErr.code === '23503') {
       return errorResponse('VALIDATION_ERROR', 'Referenced record does not exist.', 400);
     }
-    log('error', 'api.database_error', { code: pgErr.code, message: pgErr.message });
+    log('error', 'api.database_error', extractDbErrorInfo(err));
     return errorResponse('DATABASE_ERROR', 'A database error occurred.', 500);
   }
 

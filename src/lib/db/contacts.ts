@@ -1,9 +1,37 @@
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 import { AppError } from '@/lib/errors';
 import { normalizePhone } from '@/lib/phone';
+import { extractDbErrorInfo, log } from '@/lib/logger';
 import type { Contact } from '@/types/database';
 
 const db = () => createSupabaseAdminClient();
+
+function sanitizeContactPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  return {
+    keys: Object.keys(payload),
+    has_session_token: typeof payload.session_token === 'string' && payload.session_token.length > 0,
+    normalized_email:
+      typeof payload.email === 'string' ? payload.email.toLowerCase().trim() : null,
+    normalized_phone:
+      typeof payload.phone === 'string' ? normalizePhone(payload.phone) : null,
+    metadata_keys:
+      payload.metadata && typeof payload.metadata === 'object'
+        ? Object.keys(payload.metadata as Record<string, unknown>)
+        : [],
+  };
+}
+
+function logDbFailure(
+  operation: string,
+  payload: Record<string, unknown>,
+  error: unknown,
+): void {
+  log('error', 'db.contacts.error', {
+    operation,
+    payload: sanitizeContactPayload(payload),
+    ...extractDbErrorInfo(error),
+  });
+}
 
 /**
  * Find a contact by their browser session token.
@@ -18,7 +46,10 @@ export async function findContactBySessionToken(
     .eq('session_token', sessionToken)
     .maybeSingle();
 
-  if (error) throw AppError.database('Failed to look up contact', error);
+  if (error) {
+    logDbFailure('findContactBySessionToken', { session_token: sessionToken }, error);
+    throw AppError.database('Failed to look up contact', error);
+  }
   return data as Contact | null;
 }
 
@@ -60,7 +91,19 @@ export async function createContact(insert: {
     .select('*')
     .single();
 
-  if (error) throw AppError.database('Failed to create contact', error);
+  if (error) {
+    logDbFailure(
+      'createContact',
+      {
+        ...insert,
+        email: normalizedEmail,
+        phone: normalizedPhone,
+        phone_normalized: normalizedPhone,
+      },
+      error,
+    );
+    throw AppError.database('Failed to create contact', error);
+  }
   return data as Contact;
 }
 
@@ -89,7 +132,10 @@ export async function updateContact(
     .select('*')
     .single();
 
-  if (error) throw AppError.database('Failed to update contact', error);
+  if (error) {
+    logDbFailure('updateContact', { id, ...normalizedPatch }, error);
+    throw AppError.database('Failed to update contact', error);
+  }
   if (!data) throw AppError.notFound('Contact', id);
   return data as Contact;
 }
@@ -106,7 +152,10 @@ export async function findContactByPhone(phone: string): Promise<Contact | null>
     .eq('phone_normalized', normalized)
     .maybeSingle();
 
-  if (error) throw AppError.database('Failed to look up contact by phone', error);
+  if (error) {
+    logDbFailure('findContactByPhone', { phone, normalized_phone: normalized }, error);
+    throw AppError.database('Failed to look up contact by phone', error);
+  }
   return data as Contact | null;
 }
 
@@ -121,7 +170,10 @@ export async function findContactByEmail(email: string): Promise<Contact | null>
     .eq('email', email.toLowerCase().trim())
     .maybeSingle();
 
-  if (error) throw AppError.database('Failed to look up contact by email', error);
+  if (error) {
+    logDbFailure('findContactByEmail', { email: email.toLowerCase().trim() }, error);
+    throw AppError.database('Failed to look up contact by email', error);
+  }
   return data as Contact | null;
 }
 
@@ -142,7 +194,10 @@ export async function findContactByEmailOrPhone(
       .select('*')
       .eq('email', email.toLowerCase().trim())
       .maybeSingle();
-    if (error) throw AppError.database('Failed to look up contact by email', error);
+    if (error) {
+      logDbFailure('findContactByEmailOrPhone.email', { email: email.toLowerCase().trim() }, error);
+      throw AppError.database('Failed to look up contact by email', error);
+    }
     if (data) return data as Contact;
   }
 
@@ -153,7 +208,14 @@ export async function findContactByEmailOrPhone(
       .select('*')
       .eq('phone_normalized', normalizedPhone)
       .maybeSingle();
-    if (error) throw AppError.database('Failed to look up contact by phone', error);
+    if (error) {
+      logDbFailure(
+        'findContactByEmailOrPhone.phone',
+        { phone, normalized_phone: normalizedPhone },
+        error,
+      );
+      throw AppError.database('Failed to look up contact by phone', error);
+    }
     if (data) return data as Contact;
   }
 
@@ -167,7 +229,10 @@ export async function getContactById(id: string): Promise<Contact> {
     .eq('id', id)
     .maybeSingle();
 
-  if (error) throw AppError.database('Failed to fetch contact', error);
+  if (error) {
+    logDbFailure('getContactById', { id }, error);
+    throw AppError.database('Failed to fetch contact', error);
+  }
   if (!data) throw AppError.notFound('Contact', id);
   return data as Contact;
 }
