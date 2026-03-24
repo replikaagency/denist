@@ -88,13 +88,16 @@ export async function enrichContact(
     // Merge only fields that are null on the canonical record — never overwrite
     // first/last name if the canonical already has them (see docs/STAFF_CONTACT_MERGE.md).
     const mergeFields: Record<string, unknown> = {};
-    if (!duplicate.first_name  && patch.first_name)  mergeFields.first_name  = patch.first_name;
-    if (!duplicate.last_name   && patch.last_name)   mergeFields.last_name   = patch.last_name;
+    if (!duplicate.first_name && patch.first_name) mergeFields.first_name = patch.first_name;
+    if (!duplicate.last_name && patch.last_name) mergeFields.last_name = patch.last_name;
     if (!duplicate.insurance_provider && patch.insurance_provider)
       mergeFields.insurance_provider = patch.insurance_provider;
-    if (Object.keys(mergeFields).length > 0) await updateContact(duplicate.id, mergeFields);
+    const canonical =
+      Object.keys(mergeFields).length > 0
+        ? await updateContact(duplicate.id, mergeFields)
+        : duplicate;
     await transferSessionTokenToCanonical(contactId, duplicate.id);
-    return duplicate; // caller re-links the conversation to this canonical contact
+    return canonical; // caller re-links the conversation to this canonical contact
   }
 
   return updateContact(contactId, patch);

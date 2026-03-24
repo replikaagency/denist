@@ -33,6 +33,27 @@ function logDbFailure(
   });
 }
 
+type DbErrorWithCode = {
+  code?: unknown;
+  constraint?: unknown;
+  message?: unknown;
+};
+
+function isUniqueViolation(
+  error: unknown,
+  constraints: string[],
+): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const dbError = error as DbErrorWithCode;
+  if (dbError.code === '23505') return true;
+  if (typeof dbError.constraint === 'string' && constraints.includes(dbError.constraint)) return true;
+  if (typeof dbError.message === 'string') {
+    const message = dbError.message;
+    return constraints.some((constraint) => message.includes(constraint));
+  }
+  return false;
+}
+
 /**
  * Find a contact by their browser session token.
  * Returns null if not found (caller decides whether to create one).
@@ -92,6 +113,25 @@ export async function createContact(insert: {
     .single();
 
   if (error) {
+    // Race-safe fallback: if another request inserts the same identity between our
+    // read-before-write checks and insert, resolve to the winner instead of failing.
+    if (
+      isUniqueViolation(error, [
+        'contacts_email_key',
+        'contacts_phone_key',
+        'uq_contacts_phone_normalized',
+      ])
+    ) {
+      if (normalizedPhone) {
+        const winnerByPhone = await findContactByPhone(normalizedPhone);
+        if (winnerByPhone) return winnerByPhone;
+      }
+      if (normalizedEmail) {
+        const winnerByEmail = await findContactByEmail(normalizedEmail);
+        if (winnerByEmail) return winnerByEmail;
+      }
+    }
+
     logDbFailure(
       'createContact',
       {

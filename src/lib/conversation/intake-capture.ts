@@ -45,12 +45,12 @@ export async function tryDeterministicIntakeCapture({
     }
     if (details.phone && isMissing('patient.phone') && !state.patient.phone) {
       state.patient.phone = details.phone;
-      microAcks.push('Genial, teléfono anotado.');
+      microAcks.push('Perfecto, teléfono anotado.');
       capturedAny = true;
     }
     if (details.new_or_returning && isMissing('patient.new_or_returning') && !state.patient.new_or_returning) {
       state.patient.new_or_returning = details.new_or_returning;
-      microAcks.push(details.new_or_returning === 'new' ? 'Genial, es tu primera vez.' : 'Perfecto, ya has venido antes.');
+      microAcks.push(details.new_or_returning === 'new' ? 'Perfecto, es tu primera vez.' : 'Perfecto, ya has venido antes.');
       capturedAny = true;
     }
     if (details.service_type && isMissing('appointment.service_type') && !state.appointment.service_type) {
@@ -60,7 +60,7 @@ export async function tryDeterministicIntakeCapture({
     }
     if (details.preferred_date && isMissing('appointment.preferred_date') && !state.appointment.preferred_date) {
       state.appointment.preferred_date = details.preferred_date;
-      microAcks.push(`Anotado, ${details.preferred_date}.`);
+      microAcks.push(`Perfecto, ${details.preferred_date}.`);
       capturedAny = true;
     }
     if (details.preferred_time && isMissing('appointment.preferred_time') && !state.appointment.preferred_time) {
@@ -91,6 +91,22 @@ export async function tryDeterministicIntakeCapture({
     }
   }
   const field = missingFields[0];
+  const requiredIdentityRefusal = handleRequiredIdentityRefusal({
+    field,
+    content,
+    state,
+  });
+  if (requiredIdentityRefusal) {
+    await saveState(conversation_id, state);
+    const aiMessage = await insertMessage({
+      conversation_id,
+      role: 'ai',
+      content: requiredIdentityRefusal,
+      metadata: { type: 'intake_required_refusal', field },
+    });
+    return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
+  }
+
   if (field === 'patient.full_name' && looksLikeFullName(content)) {
     const name = extractNameGuard(content);
     state.patient.full_name = name;
@@ -98,7 +114,7 @@ export async function tryDeterministicIntakeCapture({
     const aiMessage = await insertMessage({
       conversation_id,
       role: 'ai',
-      content: `¡Gracias, ${name?.split(' ')[0] || 'paciente'}! ¿A qué número te podemos llamar?`,
+      content: `Gracias, ${name?.split(' ')[0] || 'paciente'}. ¿A qué número te llamamos?`,
       metadata: { type: 'intake_guard', field: 'full_name' },
     });
     return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
@@ -134,6 +150,22 @@ export async function tryDeterministicIntakeCapture({
             })?.prompt ?? 'Perfecto, lo dejo anotado.'
           : 'Perfecto, lo dejo anotado.',
       );
+    if (isAckLike(content)) {
+      const aiMessage = await insertMessage({
+        conversation_id,
+        role: 'ai',
+        content: 'Para continuar, elige una opción: ¿es tu primera vez en la clínica o ya has venido antes?',
+        metadata: {
+          type: 'patient_status_choice',
+          field: 'new_or_returning',
+          options: [
+            { label: 'Es mi primera vez', value: 'patient_status_new' },
+            { label: 'Ya he venido antes', value: 'patient_status_returning' },
+          ],
+        },
+      });
+      return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
+    }
     const newOrReturning = extractNewOrReturningGuard(content);
     if (newOrReturning) {
       state.patient.new_or_returning = newOrReturning;
@@ -141,7 +173,7 @@ export async function tryDeterministicIntakeCapture({
       const aiMessage = await insertMessage({
         conversation_id,
         role: 'ai',
-        content: buildNextPrompt(newOrReturning === 'new' ? 'Genial, es tu primera vez.' : 'Perfecto, ya has venido antes.'),
+        content: buildNextPrompt(newOrReturning === 'new' ? 'Perfecto, es tu primera vez.' : 'Perfecto, ya has venido antes.'),
         metadata: { type: 'intake_guard', field: 'new_or_returning' },
       });
       return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
@@ -152,7 +184,7 @@ export async function tryDeterministicIntakeCapture({
       const aiMessage = await insertMessage({
         conversation_id,
         role: 'ai',
-        content: buildNextPrompt('Genial, es tu primera vez.'),
+        content: buildNextPrompt('Perfecto, es tu primera vez.'),
         metadata: { type: 'intake_guard', field: 'new_or_returning' },
       });
       return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
@@ -175,7 +207,7 @@ export async function tryDeterministicIntakeCapture({
       const aiMessage = await insertMessage({
         conversation_id,
         role: 'ai',
-        content: 'Perfecto. ¿Qué hora concreta te viene mejor?',
+        content: 'Perfecto. ¿Qué hora exacta te viene mejor?',
         metadata: { type: 'intake_guard', field: 'preferred_time' },
       });
       return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
@@ -205,6 +237,47 @@ export async function tryDeterministicIntakeCapture({
   return null;
 }
 
+function handleRequiredIdentityRefusal(params: {
+  field: string;
+  content: string;
+  state: ConversationState;
+}): string | null {
+  const { field, content, state } = params;
+  if (field !== 'patient.full_name' && field !== 'patient.phone') return null;
+  if (!isNegativeRequiredFieldReply(content)) return null;
+
+  const metadata = state.metadata as Record<string, unknown>;
+  const key = field === 'patient.full_name' ? 'required_refusal_full_name_count' : 'required_refusal_phone_count';
+  const previous = typeof metadata[key] === 'number' ? metadata[key] : 0;
+  const attempts = previous + 1;
+  metadata[key] = attempts;
+
+  if (field === 'patient.full_name') {
+    if (attempts >= 2) {
+      return 'Sin tu nombre completo no puedo registrar la solicitud. Si no quieres continuar ahora, puedes escribir "cancelar".';
+    }
+    return 'Para registrar la solicitud necesito ese dato. Si quieres seguir, indícamelo por aquí.';
+  }
+
+  if (attempts >= 2) {
+    return 'Sin un teléfono de contacto no puedo registrar la solicitud. Si no quieres continuar ahora, puedes escribir "cancelar".';
+  }
+  return 'Para registrar la solicitud necesito ese dato. Si quieres seguir, indícamelo por aquí.';
+}
+
+function isNegativeRequiredFieldReply(content: string): boolean {
+  const t = content.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  return (
+    /^no+p?$/.test(t) ||
+    /\b(no quiero|prefiero no decirlo|mejor no)\b/.test(t)
+  );
+}
+
+function isAckLike(content: string): boolean {
+  const t = content.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  return /^(ok|vale)$/.test(t);
+}
+
 function composeAckAndPrompt(acks: string[], nextPrompt: string): string {
   const firstAck = acks.find(Boolean);
   return firstAck ? `${firstAck} ${nextPrompt}` : nextPrompt;
@@ -228,7 +301,7 @@ function composeAckAndPromptWithOptionalSideAnswer(acks: string[], nextPrompt: s
 function buildBriefSideAnswer(content: string): string | null {
   const t = content.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   if (/\b(precio|cuanto cuesta|tarifa|coste)\b/.test(t)) {
-    return 'Sobre precio, te lo confirma recepción según valoración.';
+    return 'Sobre el precio, te lo confirma recepción según valoración.';
   }
   if (/\b(duele|dolor|molesta)\b/.test(t)) {
     return 'Suele ser bien tolerado y usamos anestesia si hace falta.';

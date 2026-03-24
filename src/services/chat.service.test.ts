@@ -155,6 +155,7 @@ describe('processChatMessage', () => {
       status: 'pending',
       appointment_type: 'other',
     } as Awaited<ReturnType<typeof appointmentService.createRequest>>);
+    vi.mocked(appointmentService.findOpenAppointmentRequest).mockResolvedValue(null);
     vi.mocked(appointmentService.findOpenRequestsForContact).mockResolvedValue([]);
 
     vi.mocked(callLLM).mockResolvedValue({
@@ -207,10 +208,40 @@ describe('processChatMessage', () => {
     const confirmationInsert = insertMessageMock.mock.calls.find(
       ([payload]) => payload?.role === 'ai' && payload?.metadata?.type === 'optional_email_choice',
     )?.[0];
+    expect(confirmationInsert?.content).toContain('Respóndeme solo con:');
     expect(confirmationInsert?.metadata?.options).toEqual([
-      { label: 'Añadir correo', value: 'email_add_yes' },
-      { label: 'No, gracias', value: 'email_add_no' },
+      { label: '1. Añadir correo', value: 'email_add_yes' },
+      { label: '2. No, gracias', value: 'email_add_no' },
     ]);
+  });
+
+  it('uses strict 1/2 optional-email copy on reschedule confirmation success', async () => {
+    const state = createInitialState('conv1');
+    state.awaiting_confirmation = true;
+    state.reschedule_target_id = 'req-1';
+    state.pending_appointment = {
+      service_type: 'cleaning',
+      preferred_date: '2026-06-15',
+      preferred_time: 'morning',
+      preferred_provider: null,
+      flexibility: null,
+    };
+    state.confirmation_prompt_at = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'sí',
+    });
+
+    const confirmationInsert = insertMessageMock.mock.calls.find(
+      ([payload]) => payload?.role === 'ai' && payload?.metadata?.type === 'optional_email_choice',
+    )?.[0];
+    expect(confirmationInsert).toBeTruthy();
+    expect(confirmationInsert.content).toContain('Respóndeme solo con:');
+    expect(confirmationInsert.content).toContain('1. Añadir correo');
+    expect(confirmationInsert.content).toContain('2. No, gracias');
   });
 
   it('expires stale confirmation and does not create a request from sí; continues to LLM flow', async () => {
@@ -579,6 +610,45 @@ describe('processChatMessage', () => {
     });
   });
 
+  it('does not use generic misunderstanding fallback for greeting-only "hola"', async () => {
+    const state = createInitialState('conv1');
+    state.current_intent = null;
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+    vi.mocked(engine.processTurn).mockReturnValue({ error: 'forced-test-parse-error' } as ReturnType<typeof engine.processTurn>);
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'hola',
+    });
+
+    const aiInsert = insertMessageMock.mock.calls.map(([payload]) => payload).find(
+      (payload) => payload?.role === 'ai' && payload?.metadata?.type === 'social_greeting',
+    );
+    expect(aiInsert).toBeTruthy();
+    expect(aiInsert.content).toContain('Puedo ayudarte a reservar cita o resolver dudas');
+    expect(aiInsert.content).not.toContain('no te he entendido');
+  });
+
+  it('treats "buenos días" as greeting-only and returns helpful continuation', async () => {
+    const state = createInitialState('conv1');
+    state.current_intent = null;
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+    vi.mocked(engine.processTurn).mockReturnValue({ error: 'forced-test-parse-error' } as ReturnType<typeof engine.processTurn>);
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'buenos días',
+    });
+
+    const aiInsert = insertMessageMock.mock.calls.map(([payload]) => payload).find(
+      (payload) => payload?.role === 'ai' && payload?.metadata?.type === 'social_greeting',
+    );
+    expect(aiInsert).toBeTruthy();
+    expect(aiInsert.content).toContain('¿Qué necesitas?');
+  });
+
   it('answers side question and returns to next booking step', async () => {
     const state = createInitialState('conv1');
     state.current_intent = 'appointment_request';
@@ -756,10 +826,179 @@ describe('processChatMessage', () => {
     expect(quickChoiceInsert).toBeTruthy();
     expect(quickChoiceInsert.metadata?.options).toEqual([
       { label: 'Elegir hora directamente', value: 'quick_path_direct' },
-      { label: 'Prefiero que recepción me contacte', value: 'quick_path_reception' },
+      { label: 'Dejar preferencia a recepción', value: 'quick_path_reception' },
     ]);
     expect(callLLM).not.toHaveBeenCalled();
     process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
+  });
+
+  it('routes booking-entry text to two-path choice when self-service URL exists', async () => {
+    const prevSelfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL;
+    process.env.BOOKING_SELF_SERVICE_URL = 'https://cal.example.com/book';
+    const state = createInitialState('conv1');
+    state.current_intent = null;
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'quiero cita',
+    });
+
+    const quickChoiceInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_path_choice');
+    expect(quickChoiceInsert).toBeTruthy();
+    expect(quickChoiceInsert.content).toContain('1. Elegir hora directamente');
+    expect(quickChoiceInsert.content).toContain('2. Dejar preferencia para que recepción me contacte');
+    expect(callLLM).not.toHaveBeenCalled();
+    process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
+  });
+
+  it('numeric choice "1" routes to direct link path', async () => {
+    const prevSelfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL;
+    process.env.BOOKING_SELF_SERVICE_URL = 'https://cal.example.com/book';
+    const state = createInitialState('conv1');
+    state.current_intent = 'appointment_request';
+    state.metadata = { ...state.metadata, booking_path_choice_open: true };
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: '1',
+    });
+
+    const aiInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_direct_link');
+    expect(aiInsert).toBeTruthy();
+    expect(aiInsert.content).toContain('https://cal.example.com/book');
+    expect(callLLM).not.toHaveBeenCalled();
+    process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
+  });
+
+  it('numeric choice "2" routes to reception path', async () => {
+    const state = createInitialState('conv1');
+    state.current_intent = 'appointment_request';
+    state.metadata = { ...state.metadata, booking_path_choice_open: true };
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+    getNextFieldPromptMock.mockReturnValue({
+      field: 'appointment.preferred_time',
+      prompt: '¿En qué franja horaria prefieres? ¿Mañana, tarde, o tienes un horario concreto?',
+    });
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: '2',
+    });
+
+    const aiInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'time_preference_choice');
+    expect(aiInsert).toBeTruthy();
+    expect(aiInsert.content).toContain('Dime qué día y qué franja te viene mejor');
+    expect(callLLM).not.toHaveBeenCalled();
+  });
+
+  it('booking binary choice rejects non-numeric reply and re-asks strict 1/2', async () => {
+    const prevSelfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL;
+    process.env.BOOKING_SELF_SERVICE_URL = 'https://cal.example.com/book';
+    const state = createInitialState('conv1');
+    state.current_intent = 'appointment_request';
+    state.metadata = { ...state.metadata, booking_path_choice_open: true };
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'sí',
+    });
+
+    const aiInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_path_choice');
+    expect(aiInsert).toBeTruthy();
+    expect(aiInsert.content).toContain('Elige una opción:');
+    expect(aiInsert.content).toContain('1. Elegir hora directamente');
+    expect(aiInsert.content).toContain('2. Dejar preferencia para que recepción me contacte');
+    expect(callLLM).not.toHaveBeenCalled();
+    process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
+  });
+
+  it('booking choice parse-fallback also uses same strict 1/2 prompt', async () => {
+    const prevSelfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL;
+    process.env.BOOKING_SELF_SERVICE_URL = 'https://cal.example.com/book';
+    const state = createInitialState('conv1');
+    state.current_intent = 'appointment_request';
+    state.metadata = { ...state.metadata, booking_path_choice_open: true };
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'hola',
+    });
+
+    const aiInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_path_choice');
+    expect(aiInsert).toBeTruthy();
+    expect(aiInsert.content).toBe('Elige una opción:\n1. Elegir hora directamente\n2. Dejar preferencia para que recepción me contacte');
+    process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
+  });
+
+  it('optional email binary accepts numeric 1 and asks for email', async () => {
+    const state = createInitialState('conv1');
+    state.completed = true;
+    state.appointment_request_open = true;
+    state.metadata = { ...state.metadata, optional_email_choice_open: true };
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+    vi.mocked(appointmentService.findOpenAppointmentRequest).mockResolvedValue({
+      id: 'req-open',
+      status: 'pending',
+    } as Awaited<ReturnType<typeof appointmentService.findOpenAppointmentRequest>>);
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: '1',
+    });
+
+    const aiInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.field === 'email_optional');
+    expect(aiInsert).toBeTruthy();
+    expect(aiInsert.content).toContain('¿A qué correo te envío el resumen?');
+    expect(callLLM).not.toHaveBeenCalled();
+  });
+
+  it('optional email binary rejects non-numeric and re-asks strict 1/2', async () => {
+    const state = createInitialState('conv1');
+    state.completed = true;
+    state.appointment_request_open = true;
+    state.metadata = { ...state.metadata, optional_email_choice_open: true };
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+    vi.mocked(appointmentService.findOpenAppointmentRequest).mockResolvedValue({
+      id: 'req-open',
+      status: 'pending',
+    } as Awaited<ReturnType<typeof appointmentService.findOpenAppointmentRequest>>);
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'sí',
+    });
+
+    const aiInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'optional_email_choice');
+    expect(aiInsert).toBeTruthy();
+    expect(aiInsert.content).toContain('Respóndeme solo con:');
+    expect(aiInsert.content).toContain('1. Añadir correo');
+    expect(aiInsert.content).toContain('2. No, gracias');
+    expect(callLLM).not.toHaveBeenCalled();
   });
 
   it('routes fast booking directly to request capture when self-service URL is missing', async () => {
@@ -791,7 +1030,103 @@ describe('processChatMessage', () => {
     process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
   });
 
+  it('thanks gets a short natural reply', async () => {
+    const state = createInitialState('conv1');
+    state.current_intent = null;
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'gracias',
+    });
+
+    const aiInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'social_thanks');
+    expect(aiInsert).toBeTruthy();
+    expect(aiInsert.content).toContain('¡De nada!');
+    expect(callLLM).not.toHaveBeenCalled();
+  });
+
+  it('goodbye gets a calm closing reply', async () => {
+    const state = createInitialState('conv1');
+    state.current_intent = null;
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'hasta luego',
+    });
+
+    const aiInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'social_goodbye');
+    expect(aiInsert).toBeTruthy();
+    expect(aiInsert.content).toContain('¡Hasta luego!');
+    expect(callLLM).not.toHaveBeenCalled();
+  });
+
+  it('simple ack in active open flow re-asks next required field', async () => {
+    const state = createInitialState('conv1');
+    state.current_intent = 'appointment_request';
+    state.patient.full_name = 'Ana Perez';
+    state.patient.phone = '+34111222333';
+    state.patient.new_or_returning = 'new';
+    state.appointment.service_type = null;
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+    getNextFieldPromptMock.mockReturnValue({
+      field: 'appointment.service_type',
+      prompt: '¿Para qué tipo de tratamiento quieres la cita? ¿Una limpieza, revisión, o algo distinto?',
+    });
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'vale',
+    });
+
+    const aiInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_entry');
+    expect(aiInsert).toBeTruthy();
+    expect(aiInsert.content).toContain('¿Para qué tipo de tratamiento quieres la cita?');
+    expect(callLLM).not.toHaveBeenCalled();
+  });
+
+  it('routes booking-entry text directly to reception capture when self-service URL is missing', async () => {
+    const prevSelfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL;
+    delete process.env.BOOKING_SELF_SERVICE_URL;
+    const state = createInitialState('conv1');
+    state.current_intent = null;
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+    getNextFieldPromptMock.mockReturnValue({
+      field: 'patient.new_or_returning',
+      prompt: '¿Es la primera vez que vienes a la clínica o ya eres paciente nuestro/a?',
+    });
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'necesito cita',
+    });
+
+    const quickChoiceInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_path_choice');
+    expect(quickChoiceInsert).toBeFalsy();
+    const quickInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'patient_status_choice');
+    expect(quickInsert).toBeTruthy();
+    expect(callLLM).not.toHaveBeenCalled();
+    process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
+  });
+
   it('hydrates patient identity from contact to avoid re-asking full_name/phone', async () => {
+    const prevSelfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL;
+    delete process.env.BOOKING_SELF_SERVICE_URL;
     const state = createInitialState('conv1');
     state.current_intent = null;
     state.patient.full_name = null;
@@ -819,6 +1154,7 @@ describe('processChatMessage', () => {
       .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'patient_status_choice');
     expect(quickInsert).toBeTruthy();
     expect(callLLM).not.toHaveBeenCalled();
+    process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
   });
 
   it('routes quick_path_direct safely to request capture when self-service URL is missing', async () => {
@@ -846,6 +1182,30 @@ describe('processChatMessage', () => {
     process.env.BOOKING_SELF_SERVICE_URL = prevSelfServiceUrl;
   });
 
+  it('quick_path_reception explains reception follow-up and asks next missing field', async () => {
+    const state = createInitialState('conv1');
+    state.current_intent = 'appointment_request';
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+    getNextFieldPromptMock.mockReturnValue({
+      field: 'appointment.preferred_time',
+      prompt: '¿En qué franja horaria prefieres? ¿Mañana, tarde, o tienes un horario concreto?',
+    });
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'quick_path_reception',
+    });
+
+    const aiInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'time_preference_choice');
+    expect(aiInsert).toBeTruthy();
+    expect(aiInsert.content).toContain('Dime qué día y qué franja te viene mejor');
+    expect(aiInsert.content).toContain('¿En qué franja horaria prefieres?');
+    expect(callLLM).not.toHaveBeenCalled();
+  });
+
   it('does not enter quick booking while reschedule flow is active', async () => {
     const state = createInitialState('conv1');
     state.current_intent = 'appointment_reschedule';
@@ -866,6 +1226,100 @@ describe('processChatMessage', () => {
       .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'quick_booking_entry');
     expect(quickInsert).toBeFalsy();
     expect(callLLM).toHaveBeenCalled();
+  });
+
+  it('handles "no" on required full_name with deterministic refusal (no LLM)', async () => {
+    const state = createInitialState('conv1');
+    state.current_intent = 'appointment_request';
+    state.patient.full_name = null;
+    state.patient.phone = null;
+    state.patient.new_or_returning = null;
+    state.appointment.service_type = null;
+    state.appointment.preferred_date = null;
+    state.appointment.preferred_time = null;
+    getMissingFieldsMock.mockReturnValue([
+      'patient.full_name',
+      'patient.phone',
+      'patient.new_or_returning',
+      'appointment.service_type',
+      'appointment.preferred_date',
+      'appointment.preferred_time',
+    ]);
+    vi.mocked(getContactById).mockResolvedValueOnce({
+      id: 'cont1',
+      session_token: 'sess1',
+      first_name: null,
+      last_name: null,
+      phone: null,
+      email: null,
+      created_at: '',
+      updated_at: '',
+    } as Awaited<ReturnType<typeof getContactById>>);
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'no',
+    });
+
+    const aiInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'intake_required_refusal');
+    expect(aiInsert).toBeTruthy();
+    expect(aiInsert.content).toContain('registrar la solicitud necesito ese dato');
+    expect(aiInsert.metadata).toMatchObject({ field: 'patient.full_name' });
+    expect(callLLM).not.toHaveBeenCalled();
+  });
+
+  it('captures multi-data input in one turn and advances without re-asking captured fields', async () => {
+    const state = createInitialState('conv1');
+    state.current_intent = 'appointment_request';
+    getMissingFieldsMock.mockReturnValue([
+      'patient.full_name',
+      'patient.phone',
+      'patient.new_or_returning',
+      'appointment.service_type',
+      'appointment.preferred_date',
+      'appointment.preferred_time',
+    ]);
+    getNextFieldPromptMock.mockReturnValue({
+      field: 'patient.new_or_returning',
+      prompt: '¿Es la primera vez que vienes a la clínica o ya eres paciente nuestro/a?',
+    });
+    vi.mocked(getContactById).mockResolvedValueOnce({
+      id: 'cont1',
+      session_token: 'sess1',
+      first_name: null,
+      last_name: null,
+      phone: null,
+      email: null,
+      created_at: '',
+      updated_at: '',
+    } as Awaited<ReturnType<typeof getContactById>>);
+    vi.mocked(conversationService.loadState).mockResolvedValue(state);
+
+    await processChatMessage({
+      session_token: 'sess1',
+      conversation_id: 'conv1',
+      content: 'soy Oliver Garcia, 666666666, limpieza mañana por la tarde',
+    });
+
+    const saveCalls = vi.mocked(conversationService.saveState).mock.calls;
+    const finalState = saveCalls[saveCalls.length - 1][1];
+    expect(finalState.patient.full_name).toBe('Oliver Garcia');
+    expect(finalState.patient.phone).toBe('+34666666666');
+    expect(finalState.appointment.service_type).toBe('limpieza');
+    expect(finalState.appointment.preferred_date).toBe('mañana');
+    expect(finalState.appointment.preferred_time).toBe('afternoon');
+
+    const aiInsert = insertMessageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload?.role === 'ai' && payload?.metadata?.type === 'intake_guard');
+    expect(aiInsert).toBeTruthy();
+    expect(aiInsert.content).toContain('¿Es la primera vez que vienes a la clínica');
+    expect(aiInsert.content).not.toContain('¿A qué número te podemos llamar?');
+    expect(callLLM).not.toHaveBeenCalled();
   });
 
 });

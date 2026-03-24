@@ -60,13 +60,17 @@ const CORRECTION_CHOICE_OPTIONS = [
   { label: 'Cambiar servicio', value: 'change_service' },
 ];
 const EMAIL_FOLLOWUP_OPTIONS = [
-  { label: 'Añadir correo', value: 'email_add_yes' },
-  { label: 'No, gracias', value: 'email_add_no' },
+  { label: '1. Añadir correo', value: 'email_add_yes' },
+  { label: '2. No, gracias', value: 'email_add_no' },
 ];
 const QUICK_BOOKING_PATH_OPTIONS = [
   { label: 'Elegir hora directamente', value: 'quick_path_direct' },
-  { label: 'Prefiero que recepción me contacte', value: 'quick_path_reception' },
+  { label: 'Dejar preferencia a recepción', value: 'quick_path_reception' },
 ];
+const BOOKING_PATH_STRICT_PROMPT =
+  'Elige una opción:\n1. Elegir hora directamente\n2. Dejar preferencia para que recepción me contacte';
+const GREETING_CANONICAL_REPLY =
+  '¡Hola! Puedo ayudarte a reservar cita o resolver dudas. ¿Qué necesitas?';
 
 
 export interface ChatTurnInput {
@@ -136,6 +140,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   // 6. Load conversation state
   const state = await loadState(conversation_id);
   hydrateStatePatientFromContact(state, contact);
+  const stateMeta = state.metadata as Record<string, unknown>;
 
   // 6.5. Sync appointment_request_open with DB reality BEFORE processTurn so
   // validateFlowAction inside the engine sees the correct flag.
@@ -180,16 +185,44 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     state.reschedule_phase === 'idle' &&
     !state.reschedule_target_id &&
     state.current_intent !== 'appointment_reschedule';
-  if (routedContent === 'quick_booking_fast' && canEnterQuickBooking) {
+  const bookingPathChoice =
+    stateMeta.booking_path_choice_open === true
+      ? parseBookingPathSelection(routedContent)
+      : null;
+  if (stateMeta.booking_path_choice_open === true && !bookingPathChoice && !isSimpleGreetingOnly(routedContent)) {
+    const selfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL?.trim() ?? '';
+    if (selfServiceUrl) {
+      const strictChoiceMessage = await insertMessage({
+        conversation_id,
+        role: 'ai',
+        content: BOOKING_PATH_STRICT_PROMPT,
+        metadata: {
+          type: 'quick_booking_path_choice',
+          options: QUICK_BOOKING_PATH_OPTIONS,
+        },
+      });
+      return {
+        message: strictChoiceMessage,
+        contact,
+        conversation: await saveState(conversation_id, state),
+        turnResult: null,
+      };
+    }
+  }
+  if (
+    (routedContent === 'quick_booking_fast' || isQuickBookingEntryIntent(routedContent)) &&
+    canEnterQuickBooking
+  ) {
     state.current_intent = 'appointment_request';
     state.completed = false;
     const selfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL?.trim() ?? '';
     if (selfServiceUrl) {
+      stateMeta.booking_path_choice_open = true;
       const aiMessage = await insertMessage({
         conversation_id,
         role: 'ai',
         content:
-          'Perfecto. Para ir lo más rápido posible, elige cómo prefieres continuar.',
+          'Perfecto. ¿Cómo prefieres reservar?\n\n1. Elegir hora directamente\n2. Dejar preferencia para que recepción me contacte',
         metadata: {
           type: 'quick_booking_path_choice',
           options: QUICK_BOOKING_PATH_OPTIONS,
@@ -207,21 +240,22 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       const aiMessage = await insertMessage({
         conversation_id,
         role: 'ai',
-        content: nextPrompt.prompt,
+        content: `Perfecto. Dime qué día y qué franja te viene mejor para registrarlo como solicitud.\n\n${nextPrompt.prompt}`,
         metadata: buildGuidedFieldMetadata(nextPrompt.field),
       });
       const finalConversation = await saveState(conversation_id, state);
       return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
     }
   }
-  if (routedContent === 'quick_path_direct' && !state.awaiting_confirmation) {
+  if ((routedContent === 'quick_path_direct' || bookingPathChoice === 'quick_path_direct') && !state.awaiting_confirmation) {
+    stateMeta.booking_path_choice_open = false;
     const selfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL?.trim() ?? '';
     if (selfServiceUrl) {
       const aiMessage = await insertMessage({
         conversation_id,
         role: 'ai',
         content:
-          `Perfecto. Aquí tienes el enlace para elegir hora directamente: ${selfServiceUrl}\n\nSi prefieres, también puedo seguir registrando tu solicitud para que recepción te contacte.`,
+          `Perfecto. Puedes elegir la hora directamente aquí:\n${selfServiceUrl}`,
         metadata: { type: 'quick_booking_direct_link' },
       });
       const finalConversation = await saveState(conversation_id, state);
@@ -238,14 +272,15 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       const aiMessage = await insertMessage({
         conversation_id,
         role: 'ai',
-        content: nextPrompt.prompt,
+        content: `Perfecto. Dime qué día y qué franja te viene mejor para registrarlo como solicitud.\n\n${nextPrompt.prompt}`,
         metadata: buildGuidedFieldMetadata(nextPrompt.field),
       });
       const finalConversation = await saveState(conversation_id, state);
       return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
     }
   }
-  if (routedContent === 'quick_path_reception' && !state.awaiting_confirmation) {
+  if ((routedContent === 'quick_path_reception' || bookingPathChoice === 'quick_path_reception') && !state.awaiting_confirmation) {
+    stateMeta.booking_path_choice_open = false;
     state.current_intent = 'appointment_request';
     state.completed = false;
     const nextPrompt = getNextFieldPrompt('appointment_request', {
@@ -257,30 +292,67 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       const aiMessage = await insertMessage({
         conversation_id,
         role: 'ai',
-        content: nextPrompt.prompt,
+        content: `Perfecto. Dime qué día y qué franja te viene mejor para registrarlo como solicitud.\n\n${nextPrompt.prompt}`,
         metadata: buildGuidedFieldMetadata(nextPrompt.field),
       });
       const finalConversation = await saveState(conversation_id, state);
       return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
     }
   }
-  if (isQuickBookingEntryIntent(routedContent) && canEnterQuickBooking) {
-    state.current_intent = 'appointment_request';
-    state.completed = false;
-    const nextPrompt = getNextFieldPrompt('appointment_request', {
-      patient: state.patient,
-      appointment: state.appointment,
-      symptoms: state.symptoms,
-    });
-    if (nextPrompt?.prompt) {
+
+  const isStrictBinaryStepOpen =
+    stateMeta.booking_path_choice_open === true || stateMeta.optional_email_choice_open === true;
+  if (!isStrictBinaryStepOpen) {
+    const schedulingIntent =
+      state.current_intent === 'appointment_request' || state.current_intent === 'appointment_reschedule'
+        ? state.current_intent
+        : null;
+    const nextPrompt = schedulingIntent
+      ? getNextFieldPrompt(schedulingIntent, {
+          patient: state.patient,
+          appointment: state.appointment,
+          symptoms: state.symptoms,
+        })
+      : null;
+
+    if (isSimpleGreetingOnly(routedContent) && !schedulingIntent) {
       const aiMessage = await insertMessage({
         conversation_id,
         role: 'ai',
-        content: nextPrompt.prompt,
+        content: GREETING_CANONICAL_REPLY,
+        metadata: { type: 'social_greeting' },
+      });
+      return { message: aiMessage, contact, conversation: await saveState(conversation_id, state), turnResult: null };
+    }
+
+    if (isSimpleThanksOnly(routedContent)) {
+      const aiMessage = await insertMessage({
+        conversation_id,
+        role: 'ai',
+        content: nextPrompt?.prompt ? `¡De nada! ${nextPrompt.prompt}` : '¡De nada! Aquí estoy para ayudarte.',
+        metadata: nextPrompt?.field ? buildGuidedFieldMetadata(nextPrompt.field) : { type: 'social_thanks' },
+      });
+      return { message: aiMessage, contact, conversation: await saveState(conversation_id, state), turnResult: null };
+    }
+
+    if (isSimpleGoodbyeOnly(routedContent)) {
+      const aiMessage = await insertMessage({
+        conversation_id,
+        role: 'ai',
+        content: 'Perfecto, aquí me tienes cuando quieras. ¡Hasta luego!',
+        metadata: { type: 'social_goodbye' },
+      });
+      return { message: aiMessage, contact, conversation: await saveState(conversation_id, state), turnResult: null };
+    }
+
+    if (isSimpleAckOnly(routedContent) && nextPrompt?.prompt) {
+      const aiMessage = await insertMessage({
+        conversation_id,
+        role: 'ai',
+        content: `Perfecto. ${nextPrompt.prompt}`,
         metadata: buildGuidedFieldMetadata(nextPrompt.field),
       });
-      const finalConversation = await saveState(conversation_id, state);
-      return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+      return { message: aiMessage, contact, conversation: await saveState(conversation_id, state), turnResult: null };
     }
   }
 
@@ -376,9 +448,9 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
               appointment: pendingAppointment,
             });
             confirmReply =
-              '¡Listo! Tu solicitud anterior ha sido cancelada y la nueva solicitud ha quedado registrada. ' +
-              'Nuestro equipo se pondrá en contacto contigo para confirmar disponibilidad y horario. ' +
-              'Pulsa "Añadir correo" si quieres el resumen por email o "No, gracias" para finalizar.';
+              'Listo: he cancelado la solicitud anterior y he registrado la nueva con tus datos actualizados. ' +
+              'El equipo te contactará en horario de atención para confirmar disponibilidad. ' +
+              'Respóndeme solo con:\n1. Añadir correo\n2. No, gracias.';
           } catch (err: unknown) {
             // Old request was closed between selection and confirmation (e.g. staff acted).
             // Graceful fallback: create a fresh request so the patient is not left stranded.
@@ -399,9 +471,9 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
               appointment: pendingAppointment,
             });
             confirmReply =
-              'La solicitud anterior ya fue gestionada por el equipo. He registrado una nueva solicitud con tus preferencias actualizadas. ' +
-              'Te contactaremos en horario de atención para revisarla contigo. ' +
-              'Pulsa "Añadir correo" si quieres el resumen por email o "No, gracias" para finalizar.';
+              'La solicitud anterior ya estaba gestionada. He registrado una nueva con tus preferencias actualizadas. ' +
+              'El equipo te contactará en horario de atención para revisarla contigo. ' +
+              'Respóndeme solo con:\n1. Añadir correo\n2. No, gracias.';
           }
         } else {
           log('info', 'event.appointment_request_created', {
@@ -416,8 +488,8 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
             appointment: pendingAppointment,
           });
           confirmReply =
-            '¡Perfecto! Tu solicitud ha quedado registrada. Nuestro equipo te contactará en horario de atención para confirmar disponibilidad. ' +
-            'Pulsa "Añadir correo" si quieres el resumen por email o "No, gracias" para finalizar.';
+            'Perfecto, tu solicitud ya está registrada. El equipo te contactará en horario de atención para confirmar disponibilidad. ' +
+            'Respóndeme solo con:\n1. Añadir correo\n2. No, gracias.';
         }
 
         // Clear ALL confirmation + reschedule state.
@@ -430,6 +502,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
         state.reschedule_phase = 'idle';
         state.reschedule_target_id = null;
         state.reschedule_target_summary = null;
+        (state.metadata as Record<string, unknown>).optional_email_choice_open = true;
 
         const aiMessage = await insertMessage({
           conversation_id, role: 'ai', content: confirmReply,
@@ -458,8 +531,8 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
             conversation_id,
             role: 'ai',
             content:
-              'No he podido completar la confirmación ahora mismo. ' +
-              'Si quieres, vuelve a intentarlo en unos segundos o espera al equipo.',
+              'Ahora mismo no he podido completar la confirmación. ' +
+              'Puedes intentarlo de nuevo en unos segundos o esperar al equipo.',
             metadata: { type: 'confirmation_persist_fallback', path: 'confirmation_intercept' },
           });
           return { message: fallbackMessage, contact, conversation, turnResult: null };
@@ -477,8 +550,8 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
         state.reschedule_target_id = null;
         state.reschedule_target_summary = null;
         const declineReply = wasReschedule
-          ? 'Entendido, dejamos tu solicitud tal como está. Si quieres, te ayudo a registrar una nueva solicitud con otra preferencia.'
-          : 'Entendido. ¿Qué dato te gustaría cambiar? Dime la fecha, la hora o el servicio que prefieres y lo actualizo.';
+          ? 'Perfecto, dejamos tu solicitud como está. Si quieres, te ayudo a registrar una nueva con otra preferencia.'
+          : 'Perfecto. ¿Qué quieres cambiar: fecha, hora o servicio?';
         const aiMessage = await insertMessage({
           conversation_id, role: 'ai', content: declineReply,
           metadata: {
@@ -520,7 +593,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
           path: 'confirmation_escalation',
         });
         const escalateReply =
-          'No me ha quedado claro si quieres confirmar tu solicitud. Voy a conectarte con un miembro de nuestro equipo para que puedan ayudarte directamente.';
+          'No me queda claro si quieres confirmar la solicitud. Te paso con nuestro equipo para ayudarte mejor.';
         const aiMessage = await insertMessage({
           conversation_id, role: 'ai', content: escalateReply,
           metadata: { type: 'confirmation_escalated', classifier_result: 'ambiguous', path: 'confirmation_intercept' },
@@ -531,7 +604,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
 
       // Ask again.
       const clarifyReply =
-        'Antes de confirmar: ¿quieres cambiar algo o confirmamos tal cual? Pulsa "Confirmar" o "Cambiar datos".';
+        '¿Lo confirmamos así o quieres cambiar algo? Pulsa "Confirmar" o "Cambiar datos".';
       const aiMessage = await insertMessage({
         conversation_id, role: 'ai', content: clarifyReply,
         metadata: {
@@ -558,8 +631,8 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
           conversation_id,
           role: 'ai',
           content:
-            'No he podido completar la confirmación ahora mismo. ' +
-            'Si quieres, vuelve a intentarlo en unos segundos o espera al equipo.',
+            'Ahora mismo no he podido completar la confirmación. ' +
+            'Puedes intentarlo de nuevo en unos segundos o esperar al equipo.',
           metadata: { type: 'confirmation_intercept_fallback', path: 'confirmation_intercept' },
         });
         return { message: fallbackMessage, contact, conversation, turnResult: null };
@@ -594,7 +667,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
         appointment: state.appointment,
         symptoms: state.symptoms,
       });
-      const reply = `Perfecto, vamos a ajustar tu solicitud (${directSelected.summary}).\n\n${nextPrompt?.prompt ?? '¿Qué día te vendría mejor?'}`;
+      const reply = `Perfecto, vamos a ajustar tu solicitud (${directSelected.summary}).\n\n${nextPrompt?.prompt ?? '¿Qué día te viene mejor?'}`
       const aiMsg = await insertMessage({ conversation_id, role: 'ai', content: reply, metadata: { type: 'reschedule_target_locked', target_id: directSelected.id } });
       return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
     }
@@ -606,13 +679,13 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       state.reschedule_target_summary = null;
       delete meta.reschedule_options;
       delete meta.reschedule_options_count;
-      const reply = 'Entendido, dejamos las solicitudes como están. Si quieres, te ayudo a registrar una nueva solicitud ahora mismo.';
+      const reply = 'Perfecto, dejamos las solicitudes como están. Si quieres, te ayudo a registrar una nueva.';
       const aiMsg = await insertMessage({ conversation_id, role: 'ai', content: reply, metadata: { type: 'reschedule_aborted' } });
       return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
     }
 
     if (selection === 'ambiguous') {
-      const reply = 'No lo he entendido. Pulsa la solicitud que quieres cambiar o dime el número. Si prefieres dejarlo, escribe "cancelar".';
+      const reply = 'No te entendí. Pulsa la solicitud que quieres cambiar o dime el número. Si prefieres dejarlo, escribe "cancelar".';
       const aiMsg = await insertMessage({ conversation_id, role: 'ai', content: reply, metadata: { type: 'reschedule_selection_retry' } });
       return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
     }
@@ -620,7 +693,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     // Valid numeric selection — lock the target.
     const chosen = options[selection - 1];
     if (!chosen) {
-      const reply = `Solo tienes ${options.length} solicitud(es) pendiente(s). Pulsa una opción o dime el número correcto. También puedes escribir "cancelar".`;
+      const reply = `Tienes ${options.length} solicitud(es) pendiente(s). Pulsa una opción o dime el número correcto. También puedes escribir "cancelar".`;
       const aiMsg = await insertMessage({ conversation_id, role: 'ai', content: reply, metadata: { type: 'reschedule_selection_out_of_range' } });
       return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
     }
@@ -641,7 +714,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       appointment: state.appointment,
       symptoms: state.symptoms,
     });
-    const reply = `Perfecto, vamos a ajustar tu solicitud (${chosen.summary}).\n\n${nextPrompt?.prompt ?? '¿Qué día te vendría mejor?'}`;
+    const reply = `Perfecto, vamos a ajustar tu solicitud (${chosen.summary}).\n\n${nextPrompt?.prompt ?? '¿Qué día te viene mejor?'}`
     const aiMsg = await insertMessage({ conversation_id, role: 'ai', content: reply, metadata: { type: 'reschedule_target_locked', target_id: chosen.id } });
     return { message: aiMsg, contact, conversation: await saveState(conversation_id, state), turnResult: null };
   }
@@ -653,21 +726,35 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
   // to end the conversation. Without this intercept the terminal-stage LLM fires
   // end_conversation and closes the conversation while the patient is unsatisfied.
   if (state.completed && state.appointment_request_open && !state.awaiting_confirmation) {
-    if (routedContent === 'email_add_yes') {
+    const optionalEmailChoiceOpen = (state.metadata as Record<string, unknown>).optional_email_choice_open === true;
+    const optionalEmailChoice = parseStrictOneTwoChoice(routedContent);
+    if (optionalEmailChoiceOpen && !optionalEmailChoice && routedContent !== 'email_add_yes' && routedContent !== 'email_add_no') {
       const aiMessage = await insertMessage({
         conversation_id,
         role: 'ai',
-        content: 'Perfecto. ¿Qué correo quieres que añada para enviarte el resumen?',
+        content: 'Respóndeme solo con:\n1. Añadir correo\n2. No, gracias.',
+        metadata: { type: 'optional_email_choice', options: EMAIL_FOLLOWUP_OPTIONS },
+      });
+      const finalConversation = await saveState(conversation_id, state);
+      return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
+    }
+    if (routedContent === 'email_add_yes' || optionalEmailChoice === 1) {
+      (state.metadata as Record<string, unknown>).optional_email_choice_open = false;
+      const aiMessage = await insertMessage({
+        conversation_id,
+        role: 'ai',
+        content: 'Perfecto. ¿A qué correo te envío el resumen?',
         metadata: { type: 'intake_guard', field: 'email_optional' },
       });
       const finalConversation = await saveState(conversation_id, state);
       return { message: aiMessage, contact, conversation: finalConversation, turnResult: null };
     }
-    if (routedContent === 'email_add_no') {
+    if (routedContent === 'email_add_no' || optionalEmailChoice === 2) {
+      (state.metadata as Record<string, unknown>).optional_email_choice_open = false;
       const selfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL?.trim() ?? '';
       const closing =
         selfServiceUrl
-          ? `Perfecto, seguimos sin correo. Tu solicitud ya está registrada y el equipo te confirmará disponibilidad en horario de atención. Si prefieres elegir hora directamente, te paso el enlace: ${selfServiceUrl}`
+          ? `Perfecto, seguimos sin correo. Tu solicitud ya está registrada y el equipo te confirmará disponibilidad en horario de atención. Si prefieres elegir hora directamente, aquí tienes el enlace: ${selfServiceUrl}`
           : 'Perfecto, seguimos sin correo. Tu solicitud ya está registrada y el equipo te confirmará disponibilidad en horario de atención.';
       const aiMessage = await insertMessage({
         conversation_id,
@@ -680,7 +767,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     }
     if (classifyConfirmation(routedContent) === 'no') {
       const correctionInvite =
-        'Entendido. ¿Qué te gustaría cambiar? Puedes decirme la fecha, la hora o el servicio y lo actualizo.';
+        'Perfecto. ¿Qué quieres cambiar: fecha, hora o servicio?';
       const aiMessage = await insertMessage({
         conversation_id, role: 'ai', content: correctionInvite,
         metadata: {
@@ -781,7 +868,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     const fallbackMessage = await insertMessage({
       conversation_id,
       role: 'ai',
-      content: `Disculpa, ha habido un problema técnico. Por favor, contacta directamente con la clínica al ${clinicPhone}.`,
+      content: `Disculpa, hemos tenido un problema técnico. Puedes contactar directamente con la clínica en el ${clinicPhone}.`,
       metadata: { type: 'llm_error_fallback' },
     });
     return { message: fallbackMessage, contact, conversation, turnResult: null };
@@ -815,6 +902,41 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       getConversationById,
     });
     if (intakeResult) return intakeResult;
+    if (stateMeta.booking_path_choice_open === true) {
+      const selfServiceUrl = process.env.BOOKING_SELF_SERVICE_URL?.trim() ?? '';
+      if (selfServiceUrl) {
+        const optionMessage = await insertMessage({
+          conversation_id,
+          role: 'ai',
+          content:
+            BOOKING_PATH_STRICT_PROMPT,
+          metadata: {
+            type: 'quick_booking_path_choice',
+            options: QUICK_BOOKING_PATH_OPTIONS,
+          },
+        });
+        return {
+          message: optionMessage,
+          contact,
+          conversation,
+          turnResult: null,
+        };
+      }
+    }
+    if (isSimpleGreetingOnly(routedContent)) {
+      const greetingMessage = await insertMessage({
+        conversation_id,
+        role: 'ai',
+        content: GREETING_CANONICAL_REPLY,
+        metadata: { type: 'social_greeting' },
+      });
+      return {
+        message: greetingMessage,
+        contact,
+        conversation,
+        turnResult: null,
+      };
+    }
     const bookingFallbackPrompt = (() => {
       if (state.current_intent !== 'appointment_request' && state.current_intent !== 'appointment_reschedule') {
         return null;
@@ -884,7 +1006,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     const fallbackMessage = await insertMessage({
       conversation_id,
       role: 'ai',
-      content: 'Lo siento, no te he entendido bien. ¿Podrías repetirlo de otra forma?',
+      content: 'No te entendí bien. ¿Me lo puedes decir de otra forma?',
       metadata: { type: 'parse_error_fallback' },
     });
     return {
@@ -916,8 +1038,8 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
       if (norm(turnResult.reply) === norm(lastAi.content)) {
         turnResult.reply =
-          '¿Hay algo más en lo que pueda ayudarte? Si quieres, puedo asistirte con horarios, ' +
-          'precios o cualquier otra consulta sobre la clínica.';
+          '¿Te ayudo con algo más? Si quieres, puedo ayudarte con horarios, ' +
+          'precios o cualquier otra consulta de la clínica.';
         log('info', 'chat.repeat_question_avoided', { conversation_id });
       }
     }
@@ -1018,11 +1140,11 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
     if (openRequests.length === 0) {
       if (preExistingRequest) {
         turnResult.reply =
-          'Tu solicitud ya ha quedado registrada. Si quieres cambiar la fecha, ' +
-          'la hora o el servicio, dímelo y preparo una nueva solicitud con la preferencia correcta.';
+          'Tu solicitud ya está registrada. Si quieres cambiar fecha, hora o servicio, ' +
+          'dímelo y preparo una nueva solicitud con esa preferencia.';
       } else {
         turnResult.reply =
-          'No encuentro ninguna solicitud pendiente asociada a tu cuenta. ¿Te gustaría enviar una nueva solicitud de cita?';
+          'No encuentro ninguna solicitud pendiente asociada a tu cuenta. ¿Quieres registrar una nueva solicitud de cita?';
         turnResult.state.current_intent = 'appointment_request';
       }
     } else if (openRequests.length === 1) {
@@ -1040,7 +1162,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
           patient: turnResult.state.patient,
           appointment: turnResult.state.appointment,
           symptoms: turnResult.state.symptoms,
-        })?.prompt ?? '¿Qué día te vendría mejor?'}`;
+        })?.prompt ?? '¿Qué día te viene mejor?'}`;
     } else {
       const options = openRequests.map((req) => ({ id: req.id, summary: summarizeRequest(req) }));
       turnResult.state.reschedule_phase = 'selecting_target';
@@ -1048,7 +1170,7 @@ export async function processChatMessage(input: ChatTurnInput): Promise<ChatTurn
       (turnResult.state.metadata as Record<string, unknown>).reschedule_options_count = options.length;
       const listText = options.map((opt, i) => `${i + 1}. ${opt.summary}`).join('\n');
       turnResult.reply =
-        `Tienes varias solicitudes pendientes:\n\n${listText}\n\nPulsa cuál quieres cambiar o dime el número.`;
+        `Tienes varias solicitudes pendientes:\n\n${listText}\n\nPulsa la que quieres cambiar o dime el número.`;
     }
   }
 
@@ -1492,8 +1614,39 @@ function isQuickBookingEntryIntent(text: string): boolean {
   return (
     t === 'quick_booking_start' ||
     t === 'quick_booking_fast' ||
-    /\b(reservar cita|solicitar cita rapida|quiero reservar|quiero pedir cita)\b/.test(t)
+    /\b(reservar cita|solicitar cita rapida|quiero cita|quiero reservar|necesito cita|me gustaria pedir cita|quiero agendar cita|quiero pedir cita)\b/.test(t)
   );
+}
+
+function parseBookingPathSelection(
+  text: string,
+): 'quick_path_direct' | 'quick_path_reception' | null {
+  const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  if (/^(1|1\.|1\))$/.test(t)) return 'quick_path_direct';
+  if (/^(2|2\.|2\))$/.test(t)) return 'quick_path_reception';
+  return null;
+}
+
+function parseStrictOneTwoChoice(text: string): 1 | 2 | null {
+  const t = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  if (/^(1|1\.|1\))$/.test(t)) return 1;
+  if (/^(2|2\.|2\))$/.test(t)) return 2;
+  return null;
+}
+
+function isSimpleThanksOnly(message: string): boolean {
+  const t = message.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  return /^(gracias|muchas gracias)$/.test(t);
+}
+
+function isSimpleGoodbyeOnly(message: string): boolean {
+  const t = message.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  return /^(adios|gracias adios|hasta luego)$/.test(t);
+}
+
+function isSimpleAckOnly(message: string): boolean {
+  const t = message.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  return /^(ok|vale)$/.test(t);
 }
 
 function hydrateStatePatientFromContact(
@@ -1569,7 +1722,7 @@ function buildConfirmationSummary(
   patient: import('@/lib/conversation/schema').ConversationState['patient'],
   appointment: import('@/lib/conversation/schema').ConversationState['appointment'],
 ): string {
-  const lines: string[] = ['Antes de registrar tu solicitud, estos son los datos:'];
+  const lines: string[] = ['Antes de registrarla, revisa estos datos:'];
   if (patient.full_name) lines.push(`• Nombre: ${patient.full_name}`);
   if (patient.phone) lines.push(`• Teléfono: ${patient.phone}`);
   if (appointment.service_type) lines.push(`• Servicio: ${appointment.service_type}`);
@@ -1577,7 +1730,7 @@ function buildConfirmationSummary(
   if (appointment.preferred_time) lines.push(`• Horario: ${appointment.preferred_time}`);
   if (appointment.preferred_provider) lines.push(`• Dentista: ${appointment.preferred_provider}`);
   lines.push(
-    '\nAntes de confirmar: ¿quieres cambiar algo o confirmamos tal cual? Pulsa "Confirmar" o "Cambiar datos".',
+    '\n¿Lo confirmamos así o quieres cambiar algo? Pulsa "Confirmar" o "Cambiar datos".',
   );
   return lines.join('\n');
 }
@@ -1634,7 +1787,7 @@ function buildRescheduleConfirmationSummary(
   patient: import('@/lib/conversation/schema').ConversationState['patient'],
   newAppointment: import('@/lib/conversation/schema').ConversationState['appointment'],
 ): string {
-  const lines: string[] = ['Antes de hacer el cambio, confirma los datos:'];
+  const lines: string[] = ['Antes de hacer el cambio, revisa estos datos:'];
   lines.push(`\nSolicitud actual: ${oldSummary}`);
   lines.push('\nNueva solicitud:');
   if (patient.full_name) lines.push(`• Nombre: ${patient.full_name}`);
@@ -1643,7 +1796,7 @@ function buildRescheduleConfirmationSummary(
   if (newAppointment.preferred_time) lines.push(`• Horario: ${newAppointment.preferred_time}`);
   if (newAppointment.preferred_provider) lines.push(`• Dentista: ${newAppointment.preferred_provider}`);
   lines.push(
-    '\nAntes de confirmar: ¿quieres cambiar algo o confirmamos tal cual? Pulsa "Confirmar" o "Cambiar datos".',
+    '\n¿Lo confirmamos así o quieres cambiar algo? Pulsa "Confirmar" o "Cambiar datos".',
   );
   return lines.join('\n');
 }
@@ -1685,3 +1838,9 @@ function isBookingSideQuestion(message: string): boolean {
   ];
   return SIDE_QUESTION_PATTERNS.some((re) => re.test(t));
 }
+
+function isSimpleGreetingOnly(message: string): boolean {
+  const t = message.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  return /^(hola|holi|hey|buenas|buenos dias|buenas tardes)[!. ]*$/.test(t);
+}
+

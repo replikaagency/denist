@@ -29,18 +29,18 @@ export interface HybridAvailabilityPayload {
 export function hybridOfferTwoWaysBlockEs(url: string): string {
   const u = url.trim();
   return (
-    'Puedes hacerlo de dos formas:\n\n' +
+    'Puedes reservar de dos formas:\n\n' +
     '1. Reservar directamente aquí:\n' +
     `👉 ${u}\n\n` +
-    '2. O si prefieres, puedo registrar tu solicitud y el equipo te contacta.'
+    '2. O, si prefieres, registro tu solicitud y el equipo te contacta.'
   );
 }
 
 /** After patient chooses the direct booking path (link will follow or is shown). */
 export function thankDirectBookingChoiceEs(): string {
   return (
-    'Genial. Al reservar en el enlace eliges tú el hueco según lo que veas disponible; ' +
-    'eso sí es una reserva directa en ese sistema. Si más adelante prefieres que te ayudemos por aquí, dímelo.'
+    'Perfecto. En ese enlace eliges tú el hueco disponible y la reserva se hace allí directamente. ' +
+    'Si luego prefieres gestionarlo por aquí, te ayudo.'
   );
 }
 
@@ -92,11 +92,11 @@ export function formatAvailabilityCapturedEs(payload: HybridAvailabilityPayload)
   const recap = buildAvailabilityRecapSentence(payload);
   const opening = recap
     ? recap
-    : 'He anotado tu preferencia para una solicitud de cita.';
+    : 'He anotado tu preferencia para la solicitud de cita.';
   return (
     `${opening}\n\n` +
     'Esto es una solicitud, no una cita confirmada. Cuando haya opciones, el equipo te contactará. ' +
-    'Ahora voy a recoger algunos datos para registrar tu solicitud. ' +
+    'Ahora te pido unos datos para registrarla. ' +
     'Si quieres añadir alguna nota más, dímelo.'
   );
 }
@@ -323,7 +323,7 @@ export function mergeAvailabilityCaptureReply(reply: string, payload: HybridAvai
 
 export function appendDirectLinkToReply(reply: string, url: string): string {
   if (!url.trim() || reply.includes(url.trim())) return reply;
-  return `${reply}\n\nSi prefieres elegir tú el horario, aquí tienes el enlace de reserva: ${url.trim()}`;
+  return `${reply}\n\nSi prefieres elegir tú el horario, aquí tienes el enlace: ${url.trim()}`;
 }
 
 export function appendHybridAckToReply(reply: string): string {

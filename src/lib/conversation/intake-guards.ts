@@ -7,7 +7,7 @@
  */
 export function isYes(message: string): boolean {
   const norm = removeDiacritics(message.trim().toLowerCase());
-  return /^(si|sí|s|yes|y|claro|vale|ok|de acuerdo|por supuesto|correcto|afirmativo|eso es|exacto|cierto|seguro|ajá|aha|así es|así|asi|perfecto|efectivamente)[.!?\s]*$/i.test(norm);
+  return /^(si|sí|s|yes|y|claro|de acuerdo|por supuesto|correcto|afirmativo|eso es|exacto|cierto|seguro|ajá|aha|así es|así|asi|perfecto|efectivamente)[.!?\s]*$/i.test(norm);
 }
 
 /**

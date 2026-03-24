@@ -19,6 +19,7 @@ const baseState = (intent = 'appointment_request') => ({
   patient: { full_name: null, phone: null, email: null, new_or_returning: null },
   appointment: {},
   symptoms: {},
+  metadata: {},
 });
 
 test('captura nombre válido', async () => {
@@ -116,6 +117,27 @@ test('captura new_or_returning con no', async () => {
   );
 });
 
+test('no clasifica new_or_returning con ack "vale"; re-pregunta elección', async () => {
+  const state = baseState();
+  state.patient.full_name = 'Juan Pérez';
+  state.patient.phone = '678123456';
+  const result = await tryDeterministicIntakeCapture({
+    state,
+    content: 'vale',
+    conversation_id: 'cid',
+    contact: {},
+    getConversationById: async () => ({}),
+  });
+  expect(result).not.toBeNull();
+  expect(state.patient.new_or_returning).toBeNull();
+  const { insertMessage } = await import('@/lib/db/messages');
+  expect(vi.mocked(insertMessage)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      metadata: expect.objectContaining({ type: 'patient_status_choice', field: 'new_or_returning' }),
+    }),
+  );
+});
+
 test('captura preferred_time con botón mañana', async () => {
   const state = baseState();
   state.patient.full_name = 'Juan Pérez';
@@ -164,6 +186,67 @@ test('no captura si input inválido', async () => {
   expect(result).toBeNull();
 });
 
+test('si falta nombre y paciente responde "no", explica requisito sin repetir pregunta ciega', async () => {
+  const state = baseState();
+  const result = await tryDeterministicIntakeCapture({
+    state,
+    content: 'no',
+    conversation_id: 'cid',
+    contact: {},
+    getConversationById: async () => ({}),
+  });
+  expect(result).not.toBeNull();
+  expect(state.patient.full_name).toBeNull();
+  const { insertMessage } = await import('@/lib/db/messages');
+  expect(vi.mocked(insertMessage)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      content: expect.stringContaining('Para registrar la solicitud necesito ese dato'),
+      metadata: expect.objectContaining({ type: 'intake_required_refusal', field: 'patient.full_name' }),
+    }),
+  );
+});
+
+test('si vuelve a rechazar nombre requerido, ofrece salida segura', async () => {
+  const state = baseState();
+  state.metadata.required_refusal_full_name_count = 1;
+  const result = await tryDeterministicIntakeCapture({
+    state,
+    content: 'prefiero no decirlo',
+    conversation_id: 'cid',
+    contact: {},
+    getConversationById: async () => ({}),
+  });
+  expect(result).not.toBeNull();
+  const { insertMessage } = await import('@/lib/db/messages');
+  expect(vi.mocked(insertMessage)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      content: expect.stringContaining('puedes escribir "cancelar"'),
+      metadata: expect.objectContaining({ type: 'intake_required_refusal', field: 'patient.full_name' }),
+    }),
+  );
+});
+
+test('si falta telefono y paciente responde "mejor no", explica requisito de contacto', async () => {
+  const state = baseState();
+  state.patient.full_name = 'Juan Pérez';
+  const result = await tryDeterministicIntakeCapture({
+    state,
+    content: 'mejor no',
+    conversation_id: 'cid',
+    contact: {},
+    getConversationById: async () => ({}),
+  });
+  expect(result).not.toBeNull();
+  expect(state.patient.phone).toBeNull();
+  const { insertMessage } = await import('@/lib/db/messages');
+  expect(vi.mocked(insertMessage)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      content: expect.stringContaining('Para registrar la solicitud necesito ese dato'),
+      metadata: expect.objectContaining({ type: 'intake_required_refusal', field: 'patient.phone' }),
+    }),
+  );
+});
+
 test('booking shortcut captura varios datos y avanza al siguiente faltante', async () => {
   const state = baseState();
   state.patient.full_name = 'Juan Pérez';
@@ -205,7 +288,7 @@ test('booking shortcut captura nombre+telefono+servicio y responde duda breve', 
   const { insertMessage } = await import('@/lib/db/messages');
   expect(vi.mocked(insertMessage)).toHaveBeenCalledWith(
     expect.objectContaining({
-      content: expect.stringContaining('Sobre precio, te lo confirma recepción según valoración.'),
+      content: expect.stringContaining('Sobre el precio, te lo confirma recepción según valoración.'),
     }),
   );
 });

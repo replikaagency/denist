@@ -101,7 +101,7 @@ describe('formatAvailabilityCapturedEs', () => {
     expect(t).toMatch(/He anotado que prefieres Limpieza/);
     expect(t).toContain('lunes');
     expect(t).toContain('18:00');
-    expect(t).toMatch(/registrar tu solicitud/i);
+    expect(t).toMatch(/registrarla/i);
   });
 });
 
@@ -133,7 +133,7 @@ describe('mergeHybridOfferTwoWaysReply', () => {
 describe('mergeDirectBookingChoiceReply', () => {
   it('adds thanks and link when missing', () => {
     const out = mergeDirectBookingChoiceReply('Perfecto.', 'https://book.test');
-    expect(out).toContain('Al reservar en el enlace');
+    expect(out).toContain('enlace eliges tú el hueco disponible');
     expect(out).toContain('https://book.test');
   });
 });
