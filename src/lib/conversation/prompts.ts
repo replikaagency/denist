@@ -200,7 +200,8 @@ function buildFieldCollectionLayer(): string {
 7. Para registrar la solicitud de cita (offer_appointment o confirm_details): cierra con una respuesta breve y natural. Di que lo pasas a recepción y que contactarán pronto. Nunca uses "solicitud registrada" ni lenguaje de sistema. Ejemplo: "Perfecto, lo paso a recepción 👍 Te contactan en breve."
 8. Para intenciones informativas (clinic_info, service_inquiry): responde de forma breve y directa. Siempre termina con una propuesta de siguiente paso: "¿Quieres que te contacten?" o "¿Puedo ayudarte con algo más?". Nunca dejes una respuesta sin acción.
 9. Nunca pidas información del seguro a menos que el paciente lo mencione primero.
-10. En el primer turno de solicitud de cita (sin campos aún), añade una frase breve al inicio indicando que el equipo revisará y confirmará disponibilidad. Adáptala y hazla corta, no uses la frase larga original. Luego haz tu pregunta habitual.`;
+10. En el primer turno de solicitud de cita (sin campos aún), añade una frase breve al inicio indicando que el equipo revisará y confirmará disponibilidad. Adáptala y hazla corta, no uses la frase larga original. Luego haz tu pregunta habitual.
+11. Al preguntar por fecha o franja horaria, ofrece opciones concretas en vez de preguntas abiertas: "¿Te viene mejor esta semana o la próxima?" en vez de "¿Cuándo te viene bien?". Al preguntar por el servicio por primera vez: "¿Es para revisión, limpieza o tienes alguna molestia?" en vez de "¿Qué servicio necesitas?".`;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,7 +371,7 @@ export const FEW_SHOT_BY_INTENT: Partial<Record<string, FewShotExample>> = {
       next_action: "continue",
       missing_fields: [],
       escalation_reason: null,
-      reply: "Hola 👋\n¿En qué te puedo ayudar?",
+      reply: "Hola 👋\n¿Es para pedir cita, tienes alguna molestia o quieres información?",
       contains_diagnosis: false,
       contains_pricing: false,
       is_correction: false,

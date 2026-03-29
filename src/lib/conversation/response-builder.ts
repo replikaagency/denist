@@ -6,7 +6,7 @@ import type { ConversationState } from '@/lib/conversation/schema';
 
 export const ENTRY_REPLY_BOOKING = 'Claro, te ayudo 👍\n¿Ya has venido antes o es tu primera vez?';
 export const ENTRY_REPLY_URGENCY = 'Siento que estés así.\nCuéntame qué te pasa y lo gestiono cuanto antes.';
-export const ENTRY_REPLY_TREATMENT_INFO = 'Claro, ¿sobre qué quieres saber?';
+export const ENTRY_REPLY_TREATMENT_INFO = 'Claro 👍 ¿Es sobre precios, tratamientos o seguros?';
 export const ENTRY_REPLY_RESCHEDULE = 'De acuerdo, lo gestiono.\n¿Para cuándo tenías la cita?';
 
 // --- Booking Entry Gate Constants ---
@@ -22,7 +22,7 @@ export const ENTRY_BOOKING_RETURNING_ASK_PHONE =
   'Perfecto. ¿Me das tu número de teléfono?';
 
 export const ENTRY_BOOKING_RETURNING_FOUND =
-  'Perfecto, ya te he localizado.';
+  'Perfecto, ya te tengo 👍\n¿Te viene mejor esta semana o la próxima?';
 
 export const ENTRY_BOOKING_RETURNING_NOT_FOUND =
   'No te encuentro con ese número.\nDime tu nombre completo y seguimos.';
@@ -62,10 +62,10 @@ export const ASAP_SLOT_INVALID_REPLY =
   'Elige una de las opciones que te pasé.\nResponde solo con 1, 2 o 3 👇';
 
 export const GREETING_CANONICAL_REPLY =
-  'Hola, soy el asistente de la clínica.\nPuedo ayudarte con información, resolver dudas o dejar una solicitud. ¿Qué necesitas?';
+  'Hola 👋 Soy el asistente de la clínica.\n¿Es para pedir cita, tienes alguna molestia o quieres información?';
 
 export const SIMPLE_INFO_INTENT_REPLY =
-  'Te puedo ayudar con horarios, precios, seguros, ubicación o citas.\n¿Qué quieres consultar?';
+  'Puedo ayudarte con horarios, precios, seguros o citas.\n¿Qué necesitas?';
 
 export const CONFIRMATION_CHANGE_ROUTING_REPLY =
   'Sin problema. ¿Qué cambias: fecha, hora o servicio?\nSi es urgente, escríbemelo.';
