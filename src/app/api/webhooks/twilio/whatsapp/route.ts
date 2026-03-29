@@ -1,4 +1,4 @@
-import { type NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { log } from '@/lib/logger';
 import {
   twilioCoreEnvPresent,
@@ -26,7 +26,7 @@ export async function GET() {
   );
 }
 
-export async function POST(_request: NextRequest) {
+export async function POST() {
   const configured = twilioCoreEnvPresent();
   const wouldProcess = twilioWhatsAppInboundProcessingEnabled();
 

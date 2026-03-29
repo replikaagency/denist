@@ -54,7 +54,7 @@ export async function POST(request: NextRequest) {
     },
   );
 
-  const { data, error } = await supabase.auth.signInWithPassword({ email: emailTrim, password });
+  const { error } = await supabase.auth.signInWithPassword({ email: emailTrim, password });
 
   if (error) {
     return NextResponse.json({ ok: false, error: 'invalid_credentials' }, { status: 401 });

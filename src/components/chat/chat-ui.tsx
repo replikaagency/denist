@@ -183,7 +183,7 @@ export function ChatUI() {
       if (incoming.length > 0) {
         setMessages(incoming);
       }
-    } catch (err) {
+    } catch {
       setError("No se ha podido conectar. Por favor, inténtalo de nuevo.");
     } finally {
       setInitializing(false);
@@ -332,7 +332,7 @@ export function ChatUI() {
         }, delayMs);
         optionClickLockRef.current = false;
       }
-    } catch (err) {
+    } catch {
       setError("Error de conexión. Por favor, inténtalo de nuevo.");
       setHttpPending(false);
       setAwaitingReveal(false);
@@ -361,6 +361,23 @@ export function ChatUI() {
               Recepcionista · En línea
             </CardDescription>
           </div>
+          {/* WhatsApp CTA — only rendered when NEXT_PUBLIC_WHATSAPP_PHONE is configured */}
+          {process.env.NEXT_PUBLIC_WHATSAPP_PHONE && (() => {
+            const phone = process.env.NEXT_PUBLIC_WHATSAPP_PHONE!.replace(/\D/g, "");
+            const clinicName = process.env.NEXT_PUBLIC_CLINIC_NAME ?? "la clínica";
+            const text = encodeURIComponent(`Hola, quiero hablar con el asistente de ${clinicName}`);
+            return (
+              <a
+                href={`https://wa.me/${phone}?text=${text}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                aria-label="Abrir chat en WhatsApp"
+              >
+                WhatsApp
+              </a>
+            );
+          })()}
           {!initializing && messages.length > 0 && (
             <Button
               variant={confirmNew ? "destructive" : "ghost"}

@@ -1,0 +1,14 @@
+{
+  "description": "Grandfathered paths allowed to import or call logConversationFlow / mock flow-logger. New production usage must go through review; prefer turn_engine.branch for new observability.",
+  "logConversationFlowAllowedPaths": [
+    "src/lib/logger/flow-logger.ts",
+    "src/lib/conversation/turn-phases/handle-booking-phase.ts",
+    "src/lib/conversation/intake-capture.ts",
+    "src/lib/conversation/flow-rules.ts",
+    "src/lib/conversation/booking-intent.ts",
+    "src/tests/turn-engine.observability.test.ts",
+    "src/tests/conversation.e2e.test.ts",
+    "src/lib/conversation/intake-capture.test.ts",
+    "src/lib/conversation/flow-rules.test.ts"
+  ]
+}

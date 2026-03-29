@@ -27,6 +27,8 @@ export const APPOINTMENT_REQUEST_RECEPTION_FIELD_ORDER: FieldPath[] = [
 
 export type AppointmentRequestFieldOptions = {
   receptionIntakePhoneFirst?: boolean;
+  /** Patient is choosing among proposed ASAP slots — do not prompt for free-text date/time. */
+  asapSlotChoicePending?: boolean;
 };
 
 export function fieldQueryOptionsFromState(state: {
@@ -35,8 +37,15 @@ export function fieldQueryOptionsFromState(state: {
 }): AppointmentRequestFieldOptions {
   if (state.current_intent !== "appointment_request") return {};
   const m = state.metadata;
-  if (!m || m.reception_intake_phone_first !== true) return {};
-  return { receptionIntakePhoneFirst: true };
+  if (!m) return {};
+  const out: AppointmentRequestFieldOptions = {};
+  if (m.reception_intake_phone_first === true) {
+    out.receptionIntakePhoneFirst = true;
+  }
+  if (m.asap_slot_choice_open === true) {
+    out.asapSlotChoicePending = true;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +304,12 @@ export function getNextFieldPrompt(
   const reqs = FIELD_REQUIREMENTS[intent];
   if (!reqs) return null;
 
-  const missing = getMissingFields(intent, filledFields, opts);
+  let missing = getMissingFields(intent, filledFields, opts);
+  if (opts?.asapSlotChoicePending) {
+    missing = missing.filter(
+      (f) => f !== 'appointment.preferred_date' && f !== 'appointment.preferred_time',
+    );
+  }
   if (missing.length === 0) return null;
 
   const field = missing[0];

@@ -279,6 +279,7 @@ export function applyFallbacks(
 }
 
 function stripDiagnosisFromReply(_reply: string): string {
+  void _reply;
   const phone = process.env.CLINIC_PHONE ?? "";
   const phoneClause = phone ? ` al ${phone}` : "";
   return (

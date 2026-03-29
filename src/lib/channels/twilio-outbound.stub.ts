@@ -16,7 +16,8 @@ export interface TwilioWhatsAppOutboundPayload {
  *
  * Never throws; logs and returns false when not ready or still stubbed.
  */
-export async function sendTwilioWhatsAppMessage(_payload: TwilioWhatsAppOutboundPayload): Promise<boolean> {
+export async function sendTwilioWhatsAppMessage(payload: TwilioWhatsAppOutboundPayload): Promise<boolean> {
+  void payload;
   if (!twilioWhatsAppOutboundReady()) {
     log('warn', 'twilio.whatsapp.outbound_skipped', { reason: 'missing_env' });
     return false;

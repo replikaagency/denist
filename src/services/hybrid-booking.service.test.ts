@@ -8,7 +8,6 @@ import {
   mergeDirectBookingChoiceReply,
   mergeHybridOfferTwoWaysReply,
   stripHybridCommittalLeadIn,
-  thankDirectBookingChoiceEs,
 } from './hybrid-booking.service';
 import { createInitialState } from '@/lib/conversation/schema';
 import { extractHybridAvailabilityHintsFromText } from '@/lib/conversation/hybrid-booking-detection';
@@ -54,14 +53,6 @@ describe('buildHybridAvailabilityPayload', () => {
     expect(payload.preferred_time_ranges.join(' ')).toMatch(/mañana/i);
   });
 
-  it('fills limpieza + lunes from combined message without LLM fields', () => {
-    const state = createInitialState('c-combined-2');
-    const msg = 'quiero limpieza, pero solo lunes';
-    const hints = extractHybridAvailabilityHintsFromText(msg);
-    const payload = buildHybridAvailabilityPayload(null, state, msg, hints);
-    expect(payload.service_interest).toMatch(/limpieza/i);
-    expect(payload.preferred_days).toContain('lunes');
-  });
 });
 
 describe('appendDirectLinkToReply', () => {

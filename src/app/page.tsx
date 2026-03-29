@@ -1,9 +1,3 @@
-import ChatUI from "@/components/chat/chat-ui";
-
-export default function Home() {
-  return (
-    <main className="flex min-h-screen items-center justify-center bg-background">
-      <ChatUI />
-    </main>
-  );
-}
+// Root page: delegates to the marketing landing page.
+// The web chat widget is available at /chat.
+export { default, metadata } from './(marketing)/page';

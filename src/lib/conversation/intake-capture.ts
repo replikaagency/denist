@@ -1,38 +1,9 @@
 import { saveState } from '@/services/conversation.service';
 import { insertMessage } from '@/lib/db/messages';
-import { resolvePatientIdentityAfterPhoneCapture } from '@/services/contact.service';
-import {
-  looksLikeFullName,
-  extractNameGuard,
-  looksLikePhone,
-  extractPhoneGuard,
-  isYes,
-  isNo,
-  extractNewOrReturningGuard,
-  extractTimePreferenceGuard,
-  extractFastBookingDetails,
-  extractOpenAvailabilityPreference,
-  EARLIEST_AVAILABLE_PREFERRED_DATE,
-} from './intake-guards';
-import { getMissingFields, getNextFieldPrompt, fieldQueryOptionsFromState } from './fields';
-import { buildGuidedFieldMetadata } from './guided-field-metadata';
-import type { ConversationState } from './schema';
-import type { Contact, Conversation } from '@/types/database';
-
-type IntakeCaptureParams = {
-  state: ConversationState;
-  content: string;
-  conversation_id: string;
-  contact: Contact;
-  getConversationById: (conversationId: string) => Promise<Conversation>;
-};
-
-type IntakeCaptureResult = {
-  message: Awaited<ReturnType<typeof insertMessage>>;
-  contact: Contact;
-  conversation: Conversation;
-  turnResult: null;
-};
+import { looksLikeFullName, extractNameGuard, looksLikePhone, extractPhoneGuard, looksLikeEmail, extractEmailGuard } from './intake-guards';
+import { getMissingFields } from './fields';
+import type { ConversationState } from '@/lib/conversation/schema';
+import type { Contact } from '@/types/database';
 
 /**
  * Attempts to deterministically capture a required intake field from user input.
@@ -44,431 +15,53 @@ export async function tryDeterministicIntakeCapture({
   conversation_id,
   contact,
   getConversationById,
-}: IntakeCaptureParams): Promise<IntakeCaptureResult | null> {
-  const filledFields = () => ({
-    patient: state.patient,
-    appointment: state.appointment,
-    symptoms: state.symptoms,
-  });
-  const fieldOpts = () => fieldQueryOptionsFromState(state);
-  const missingFields = state.current_intent
-    ? getMissingFields(state.current_intent, filledFields(), fieldOpts())
-    : [];
+}: {
+  state: ConversationState;
+  content: string;
+  conversation_id: string;
+  contact: Contact;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getConversationById: (id: string) => Promise<any>;
+  priorPatientTexts?: string[];
+}) {
+  const missingFields = state.current_intent ? getMissingFields(state.current_intent, { patient: state.patient, appointment: state.appointment, symptoms: state.symptoms }) : [];
   if (missingFields.length === 0) return null;
-  if (state.current_intent === 'appointment_request' || state.current_intent === 'appointment_reschedule') {
-    const details = extractFastBookingDetails(content);
-    let capturedAny = false;
-    const microAcks: string[] = [];
-    const isMissing = (f: string) => missingFields.includes(f as never);
-    const receptionPhoneFirst =
-      state.current_intent === 'appointment_request' && fieldOpts().receptionIntakePhoneFirst === true;
-    const blockShortcutUntilPhone = receptionPhoneFirst && !state.patient.phone;
-    if (
-      details.full_name &&
-      !blockShortcutUntilPhone &&
-      isMissing('patient.full_name') &&
-      !state.patient.full_name
-    ) {
-      state.patient.full_name = details.full_name;
-      microAcks.push(`Perfecto, ${details.full_name.split(' ')[0]}.`);
-      capturedAny = true;
-    }
-    if (details.phone && isMissing('patient.phone') && !state.patient.phone) {
-      state.patient.phone = details.phone;
-      microAcks.push('Perfecto, teléfono anotado.');
-      capturedAny = true;
-    }
-    if (
-      details.new_or_returning &&
-      !blockShortcutUntilPhone &&
-      isMissing('patient.new_or_returning') &&
-      !state.patient.new_or_returning
-    ) {
-      state.patient.new_or_returning = details.new_or_returning;
-      microAcks.push(details.new_or_returning === 'new' ? 'Perfecto, es tu primera vez.' : 'Perfecto, ya has venido antes.');
-      capturedAny = true;
-    }
-    if (
-      details.service_type &&
-      !blockShortcutUntilPhone &&
-      isMissing('appointment.service_type') &&
-      !state.appointment.service_type
-    ) {
-      state.appointment.service_type = details.service_type;
-      microAcks.push(`Perfecto, ${details.service_type}.`);
-      capturedAny = true;
-    }
-    if (
-      details.preferred_date &&
-      !blockShortcutUntilPhone &&
-      isMissing('appointment.preferred_date') &&
-      !state.appointment.preferred_date
-    ) {
-      state.appointment.preferred_date = details.preferred_date;
-      microAcks.push(
-        details.preferred_date === EARLIEST_AVAILABLE_PREFERRED_DATE
-          ? 'Perfecto, buscamos la primera disponibilidad.'
-          : `Perfecto, ${details.preferred_date}.`,
-      );
-      capturedAny = true;
-    }
-    if (
-      details.preferred_time &&
-      !blockShortcutUntilPhone &&
-      isMissing('appointment.preferred_time') &&
-      !state.appointment.preferred_time
-    ) {
-      state.appointment.preferred_time = details.preferred_time;
-      if (details.preferred_time === 'flexible') {
-        if (state.appointment.preferred_date !== EARLIEST_AVAILABLE_PREFERRED_DATE) {
-          microAcks.push('Perfecto, dejamos el horario flexible.');
-        }
-      } else {
-        microAcks.push(`Vale, ${formatTimePreferenceAck(details.preferred_time)}.`);
-      }
-      capturedAny = true;
-    }
-    if (capturedAny) {
-      if (state.appointment.preferred_date === EARLIEST_AVAILABLE_PREFERRED_DATE) {
-        state.appointment.flexibility = 'flexible';
-        (state.metadata as Record<string, unknown>).preferred_slot_type = 'earliest_available';
-      } else if (extractOpenAvailabilityPreference(content) === 'flexible_time_only') {
-        state.appointment.flexibility = state.appointment.flexibility ?? 'flexible';
-      }
-      let outContact = contact;
-      if (state.patient.phone) {
-        outContact = await resolvePatientIdentityAfterPhoneCapture(
-          state.patient,
-          conversation_id,
-          contact,
-        );
-      }
-      await saveState(conversation_id, state);
-      const nextPrompt = state.current_intent
-        ? getNextFieldPrompt(state.current_intent, filledFields(), fieldOpts())
-        : null;
-      const aiMessage = await insertMessage({
-        conversation_id,
-        role: 'ai',
-        content: composeAckAndPromptWithOptionalSideAnswer(
-          microAcks,
-          nextPrompt?.prompt ?? 'Perfecto, lo dejo anotado.',
-          content,
-        ),
-        metadata: { type: 'intake_guard', field: 'booking_shortcut' },
-      });
-      return {
-        message: aiMessage,
-        contact: outContact,
-        conversation: await getConversationById(conversation_id),
-        turnResult: null,
-      };
-    }
-  }
   const field = missingFields[0];
-  const requiredIdentityRefusal = handleRequiredIdentityRefusal({
-    field,
-    content,
-    state,
-  });
-  if (requiredIdentityRefusal) {
-    await saveState(conversation_id, state);
-    const aiMessage = await insertMessage({
-      conversation_id,
-      role: 'ai',
-      content: requiredIdentityRefusal,
-      metadata: { type: 'intake_required_refusal', field },
-    });
-    return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
-  }
-
-  const isSchedulingIntent =
-    state.current_intent === 'appointment_request' || state.current_intent === 'appointment_reschedule';
-  const openAvailPref = isSchedulingIntent ? extractOpenAvailabilityPreference(content) : null;
-  const askingDateOrTime =
-    field === 'appointment.preferred_date' || field === 'appointment.preferred_time';
-  const dateSlotMissing =
-    missingFields.includes('appointment.preferred_date') && !state.appointment.preferred_date;
-  const timeSlotMissing =
-    missingFields.includes('appointment.preferred_time') && !state.appointment.preferred_time;
-
-  if (openAvailPref && askingDateOrTime) {
-    let applied = false;
-    const meta = state.metadata as Record<string, unknown>;
-    if (openAvailPref === 'earliest_slot') {
-      if (dateSlotMissing) {
-        state.appointment.preferred_date = EARLIEST_AVAILABLE_PREFERRED_DATE;
-        applied = true;
-      }
-      if (timeSlotMissing) {
-        state.appointment.preferred_time = 'flexible';
-        applied = true;
-      }
-      if (applied) {
-        state.appointment.flexibility = 'flexible';
-        meta.preferred_slot_type = 'earliest_available';
-      }
-    } else if (openAvailPref === 'flexible_time_only' && field === 'appointment.preferred_time' && timeSlotMissing) {
-      state.appointment.preferred_time = 'flexible';
-      state.appointment.flexibility = state.appointment.flexibility ?? 'flexible';
-      applied = true;
-    }
-    if (applied) {
-      await saveState(conversation_id, state);
-      const ack =
-        openAvailPref === 'flexible_time_only'
-          ? 'Perfecto, dejamos el horario flexible.'
-          : 'Perfecto, buscamos la primera disponibilidad.';
-      const nextPrompt = state.current_intent
-        ? getNextFieldPrompt(state.current_intent, filledFields(), fieldOpts())
-        : null;
-      const aiMessage = await insertMessage({
-        conversation_id,
-        role: 'ai',
-        content: composeAckAndPrompt([ack], nextPrompt?.prompt ?? 'Perfecto, lo dejo anotado.'),
-        metadata: { type: 'intake_guard', field: 'open_availability' },
-      });
-      return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
-    }
-  }
-
-  if (field === 'patient.full_name' && looksLikeSingleName(content)) {
-    const aiMessage = await insertMessage({
-      conversation_id,
-      role: 'ai',
-      content: 'Necesito nombre y apellido para registrar la solicitud.',
-      metadata: { type: 'intake_guard', field: 'full_name' },
-    });
-    return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
-  }
-
   if (field === 'patient.full_name' && looksLikeFullName(content)) {
     const name = extractNameGuard(content);
     state.patient.full_name = name;
     await saveState(conversation_id, state);
-    const nextPrompt = state.current_intent
-      ? getNextFieldPrompt(state.current_intent, filledFields(), fieldOpts())
-      : null;
     const aiMessage = await insertMessage({
       conversation_id,
       role: 'ai',
-      content: composeAckAndPrompt(
-        [`Gracias, ${name?.split(' ')[0] || 'paciente'}.`],
-        nextPrompt?.prompt ?? 'Perfecto, lo dejo anotado.',
-      ),
-      metadata: nextPrompt
-        ? buildGuidedFieldMetadata(nextPrompt.field)
-        : { type: 'intake_guard', field: 'full_name' },
+      content: `¡Gracias, ${name?.split(' ')[0] || 'paciente'}! ¿A qué número te podemos llamar?`,
+      metadata: { type: 'intake_guard', field: 'full_name' },
     });
     return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
   }
   if (field === 'patient.phone' && looksLikePhone(content)) {
     const phone = extractPhoneGuard(content);
     state.patient.phone = phone;
-    const outContact = await resolvePatientIdentityAfterPhoneCapture(
-      state.patient,
-      conversation_id,
-      contact,
-    );
     await saveState(conversation_id, state);
-    const nextPrompt = state.current_intent
-      ? getNextFieldPrompt(state.current_intent, filledFields(), fieldOpts())
-      : null;
     const aiMessage = await insertMessage({
       conversation_id,
       role: 'ai',
-      content: composeAckAndPrompt(
-        ['Perfecto, teléfono anotado.'],
-        nextPrompt?.prompt ?? 'Perfecto, lo dejo anotado.',
-      ),
-      metadata: nextPrompt
-        ? buildGuidedFieldMetadata(nextPrompt.field)
-        : { type: 'intake_guard', field: 'phone' },
+      content: `¡Perfecto! ¿Tienes un correo electrónico donde mandarte el resumen?`,
+      metadata: { type: 'intake_guard', field: 'phone' },
     });
-    return {
-      message: aiMessage,
-      contact: outContact,
-      conversation: await getConversationById(conversation_id),
-      turnResult: null,
-    };
+    return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
   }
-  if (field === 'patient.new_or_returning') {
-    const buildNextPrompt = (ack?: string) =>
-      composeAckAndPrompt(
-        ack ? [ack] : [],
-        state.current_intent
-          ? getNextFieldPrompt(state.current_intent, filledFields(), fieldOpts())?.prompt ??
-            'Perfecto, lo dejo anotado.'
-          : 'Perfecto, lo dejo anotado.',
-      );
-    if (isAckLike(content)) {
-      const aiMessage = await insertMessage({
-        conversation_id,
-        role: 'ai',
-        content: 'Para continuar, elige una opción: ¿es tu primera vez en la clínica o ya has venido antes?',
-        metadata: {
-          type: 'patient_status_choice',
-          field: 'new_or_returning',
-          options: [
-            { label: 'Es mi primera vez', value: 'patient_status_new' },
-            { label: 'Ya he venido antes', value: 'patient_status_returning' },
-          ],
-        },
-      });
-      return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
-    }
-    const newOrReturning = extractNewOrReturningGuard(content);
-    if (newOrReturning) {
-      state.patient.new_or_returning = newOrReturning;
-      await saveState(conversation_id, state);
-      const aiMessage = await insertMessage({
-        conversation_id,
-        role: 'ai',
-        content: buildNextPrompt(newOrReturning === 'new' ? 'Perfecto, es tu primera vez.' : 'Perfecto, ya has venido antes.'),
-        metadata: { type: 'intake_guard', field: 'new_or_returning' },
-      });
-      return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
-    }
-    if (isYes(content)) {
-      state.patient.new_or_returning = 'new';
-      await saveState(conversation_id, state);
-      const aiMessage = await insertMessage({
-        conversation_id,
-        role: 'ai',
-        content: buildNextPrompt('Perfecto, es tu primera vez.'),
-        metadata: { type: 'intake_guard', field: 'new_or_returning' },
-      });
-      return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
-    }
-    if (isNo(content)) {
-      state.patient.new_or_returning = 'returning';
-      await saveState(conversation_id, state);
-      const aiMessage = await insertMessage({
-        conversation_id,
-        role: 'ai',
-        content: buildNextPrompt('Perfecto, ya has venido antes.'),
-        metadata: { type: 'intake_guard', field: 'new_or_returning' },
-      });
-      return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
-    }
-  }
-  if (field === 'appointment.preferred_time') {
-    const timePreference = extractTimePreferenceGuard(content);
-    if (timePreference?.kind === 'ask_exact') {
-      const aiMessage = await insertMessage({
-        conversation_id,
-        role: 'ai',
-        content: 'Perfecto. ¿Qué hora exacta te viene mejor?',
-        metadata: { type: 'intake_guard', field: 'preferred_time' },
-      });
-      return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
-    }
-    if (timePreference?.kind === 'value') {
-      state.appointment.preferred_time = timePreference.value;
-      await saveState(conversation_id, state);
-      const nextPrompt = state.current_intent
-        ? getNextFieldPrompt(state.current_intent, filledFields(), fieldOpts())
-        : null;
-      const aiMessage = await insertMessage({
-        conversation_id,
-        role: 'ai',
-        content: composeAckAndPrompt(
-          [`Vale, ${formatTimePreferenceAck(timePreference.value)}.`],
-          nextPrompt?.prompt ?? 'Perfecto, lo dejo anotado.',
-        ),
-        metadata: { type: 'intake_guard', field: 'preferred_time' },
-      });
-      return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
-    }
+  if (field === 'patient.email' && looksLikeEmail(content)) {
+    const email = extractEmailGuard(content);
+    state.patient.email = email;
+    await saveState(conversation_id, state);
+    const aiMessage = await insertMessage({
+      conversation_id,
+      role: 'ai',
+      content: `¡Gracias! ¿Es tu primera vez en la clínica o ya eres paciente nuestro/a?`,
+      metadata: { type: 'intake_guard', field: 'email' },
+    });
+    return { message: aiMessage, contact, conversation: await getConversationById(conversation_id), turnResult: null };
   }
   return null;
-}
-
-function handleRequiredIdentityRefusal(params: {
-  field: string;
-  content: string;
-  state: ConversationState;
-}): string | null {
-  const { field, content, state } = params;
-  if (field !== 'patient.full_name' && field !== 'patient.phone') return null;
-  if (!isNegativeRequiredFieldReply(content)) return null;
-
-  const metadata = state.metadata as Record<string, unknown>;
-  const key = field === 'patient.full_name' ? 'required_refusal_full_name_count' : 'required_refusal_phone_count';
-  const previous = typeof metadata[key] === 'number' ? metadata[key] : 0;
-  const attempts = previous + 1;
-  metadata[key] = attempts;
-
-  if (field === 'patient.full_name') {
-    if (attempts >= 2) {
-      return 'Sin tu nombre completo no puedo registrar la solicitud. Si no quieres continuar ahora, puedes escribir "cancelar".';
-    }
-    return 'Para registrar la solicitud necesito ese dato. Si quieres seguir, indícamelo por aquí.';
-  }
-
-  if (attempts >= 2) {
-    return 'Sin un teléfono de contacto no puedo registrar la solicitud. Si no quieres continuar ahora, puedes escribir "cancelar".';
-  }
-  return 'Para registrar la solicitud necesito ese dato. Si quieres seguir, indícamelo por aquí.';
-}
-
-function isNegativeRequiredFieldReply(content: string): boolean {
-  const t = content.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-  return (
-    /^no+p?$/.test(t) ||
-    /\b(no quiero|prefiero no decirlo|mejor no)\b/.test(t)
-  );
-}
-
-function isAckLike(content: string): boolean {
-  const t = content.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-  return /^(ok|vale)$/.test(t);
-}
-
-function composeAckAndPrompt(acks: string[], nextPrompt: string): string {
-  const firstAck = acks.find(Boolean);
-  return firstAck ? `${firstAck} ${nextPrompt}` : nextPrompt;
-}
-
-function formatTimePreferenceAck(value: string): string {
-  if (value === 'morning') return 'por la mañana';
-  if (value === 'afternoon') return 'por la tarde';
-  if (value === 'flexible') return 'con horario flexible';
-  return value;
-}
-
-function composeAckAndPromptWithOptionalSideAnswer(acks: string[], nextPrompt: string, content: string): string {
-  const answer = buildBriefSideAnswer(content);
-  if (answer) {
-    const firstAck = acks.find(Boolean);
-    return firstAck ? `${firstAck} ${answer} ${nextPrompt}` : `${answer} ${nextPrompt}`;
-  }
-  return composeAckAndPrompt(acks, nextPrompt);
-}
-
-function buildBriefSideAnswer(content: string): string | null {
-  const t = content.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  if (/\b(precio|cuanto cuesta|tarifa|coste)\b/.test(t)) {
-    return 'Sobre el precio, te lo confirma recepción según valoración.';
-  }
-  if (/\b(duele|dolor|molesta)\b/.test(t)) {
-    return 'Suele ser bien tolerado y usamos anestesia si hace falta.';
-  }
-  return null;
-}
-
-function looksLikeSingleName(content: string): boolean {
-  const t = content.trim();
-  const words = t.split(/\s+/).filter(Boolean);
-  if (words.length !== 1) return false;
-  const w = words[0];
-  if (!/^[a-záéíóúüñA-ZÁÉÍÓÚÜÑ]+$/.test(w) || w.length < 2) return false;
-  const norm = w.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  const STOP = new Set([
-    'si', 'no', 'ok', 'vale', 'hola', 'hoy', 'manana', 'tarde', 'noche',
-    'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo',
-    'primera', 'nuevo', 'nueva', 'paciente', 'cita', 'quiero', 'necesito', 'tengo',
-    'limpieza', 'revision', 'ortodoncia', 'urgente', 'gracias', 'adios',
-  ]);
-  return !STOP.has(norm);
 }

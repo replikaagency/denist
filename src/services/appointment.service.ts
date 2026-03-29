@@ -560,7 +560,8 @@ export async function createRequest(input: {
     return existing;
   }
 
-  const { notesFallback: _drop, ...dbFields } = resolved;
+  const { notesFallback, ...dbFields } = resolved;
+  void notesFallback;
   let request: AppointmentRequest;
   try {
     request = await createAppointmentRequest({

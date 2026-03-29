@@ -268,6 +268,20 @@ export const ConversationStateSchema = z.object({
   hybrid_booking_open: z.boolean().default(false),
   // True after the two-way self-service vs manual booking offer was appended to a reply (no DB row).
   self_service_booking_offer_shown: z.boolean().default(false),
+  /** Identity snippets captured from chat (strict validation); mirrored into patient.* — never re-ask once set. */
+  collected: z
+    .object({
+      name: z.string().optional(),
+      phone: z.string().optional(),
+    })
+    .default({}),
+  /** High-level booking mode (e.g. ASAP) — orthogonal to appointment.* fields. */
+  booking: z
+    .object({
+      type: z.enum(['asap']),
+    })
+    .nullable()
+    .default(null),
   // Audit and operational metadata. Uses .loose() so unknown keys present in
   // existing DB records are preserved on parse/re-save without a migration.
   // correction_log is expected to remain small (single-digit entries per
@@ -342,6 +356,8 @@ export function createInitialState(conversationId: string): ConversationState {
     confirmation_prompt_at: null,
     hybrid_booking_open: false,
     self_service_booking_offer_shown: false,
+    collected: {},
+    booking: null,
     metadata: { correction_log: [], correction_count: 0, last_correction_at: null, too_many_corrections: false },
   };
 }

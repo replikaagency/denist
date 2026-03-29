@@ -188,6 +188,16 @@ export interface ConversationEvent {
   created_at: string;
 }
 
+/** Append-only turn_engine.branch analytics row (no patient text). */
+export interface TurnEngineBranchEvent {
+  id: string;
+  conversation_id: string;
+  branch_taken: string;
+  current_step: string;
+  allow_llm: boolean;
+  created_at: string;
+}
+
 // ---------------------------------------------------------------------------
 // Joined / view types used by route handlers
 // ---------------------------------------------------------------------------
@@ -386,6 +396,19 @@ export type Database = {
           event_type: string;
           source?: string | null;
           metadata?: Record<string, unknown>;
+          created_at?: string;
+        };
+        Update: never;
+        Relationships: GenericRelationship[];
+      };
+      turn_engine_branch_events: {
+        Row: TurnEngineBranchEvent;
+        Insert: {
+          id?: string;
+          conversation_id: string;
+          branch_taken: string;
+          current_step: string;
+          allow_llm?: boolean;
           created_at?: string;
         };
         Update: never;

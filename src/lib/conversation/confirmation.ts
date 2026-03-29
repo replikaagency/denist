@@ -54,7 +54,7 @@ export function detectCorrectionSignals(text: string): boolean {
 
 /** "vale perfecto", "ok", "sí", etc. — whole message is agreement only. */
 const BARE_AFFIRMATION =
-  /^\s*(ok|vale|si|perfecto|genial|claro|dale|adelante|vamos|confirmo|yes|yep)(\s+(perfecto|genial|claro|gracias))?\s*[!?.]*\s*$/;
+  /^\s*(ok|vale|si|perfecto|genial|claro|dale|adelante|vamos|confirmo|confirmado|confirmada|yes|yep|sip|sii+)(\s+(perfecto|genial|claro|gracias|listo|ok))?\s*[!?.]*\s*$/;
 
 /** "sí pero …", "ok, pero …", "vale pero …" — comma/punct between tokens allowed */
 const MIXED_AFFIRM_THEN_BUT =
@@ -77,20 +77,20 @@ const SLOT_NEGATION =
   /\bno\s+(es|esa|e|esta)\s+(la\s+)?(fecha|hora|dia|servicio)\b|\bno\s+quiero\s+(esa|a esa|ese)\b|\bno\s+(a|para)\s+(esa|ese)\s+(hora|fecha|dia)\b/;
 
 const UNCERTAINTY =
-  /\b(no se|no lo se|no estoy seguro|no sabria|no tengo claro)\b/;
+  /\b(no se|no lo se|no estoy seguro|no sabria|no tengo claro|tengo dudas|no estoy convencido|no estoy convencida)\b/;
 
 /**
  * Affirmative tokens (word-boundary). "vale" included — common spoken OK in ES.
  */
 const YES =
-  /\b(si|yes|confirmo|confirmar|correcto|exacto|adelante|perfecto|de acuerdo|ok|claro|por supuesto|genial|eso es|afirmo|afirmativo|dale|vamos|vale)\b/;
+  /\b(si|yes|confirmo|confirmar|confirmado|confirmada|correcto|exacto|adelante|perfecto|de acuerdo|ok|claro|por supuesto|genial|eso es|afirmo|afirmativo|dale|vamos|vale|listo|sii+|sip)\b/;
 
 /**
  * Decline tokens. Intentionally omits standalone "cambiar" — that belongs in
  * detectCorrectionSignals / ambiguous, not a hard "no".
  */
 const NO =
-  /\b(no|cancelar|cancel|mejor no|prefiero no|espera|detener|nope|negativo|olvida|olvidalo|olvídalo)\b/;
+  /\b(no|cancelar|cancel|mejor no|prefiero no|espera|detener|nope|negativo|olvida|olvidalo|olvídalo|no confirmar|no confirmo)\b/;
 
 /**
  * Classify the patient's reply. Mixed intent ("sí pero …", "ok pero …") and
@@ -108,6 +108,8 @@ export function classifyConfirmation(text: string): ConfirmationClass {
         ? 'no'
         : text;
   const t = normalizeConfirmationText(mappedText);
+
+  if (/^\s*no\s+confirm(o|ar)\b/.test(t)) return 'no';
 
   if (UNCERTAINTY.test(t)) return 'ambiguous';
 

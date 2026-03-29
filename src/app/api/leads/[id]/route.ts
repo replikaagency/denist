@@ -7,7 +7,7 @@ import { type NextRequest } from 'next/server';
 import { successResponse, errorResponse, handleRouteError } from '@/lib/response';
 import { requireStaffAuth } from '@/lib/auth';
 import { LeadUpdateSchema } from '@/lib/schemas/lead';
-import { getLeadById, updateLead } from '@/lib/db/leads';
+import { updateLead } from '@/lib/db/leads';
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 
 type RouteParams = { params: Promise<{ id: string }> };

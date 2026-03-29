@@ -122,8 +122,8 @@ export async function resolvePatientIdentityAfterPhoneCapture(
     const name = [existing.first_name, existing.last_name].filter(Boolean).join(' ').trim();
     if (name) patient.full_name = name;
   }
-  if (!patient.new_or_returning && existing.is_new_patient === false) {
-    patient.new_or_returning = 'returning';
+  if (!patient.new_or_returning && typeof existing.is_new_patient === 'boolean') {
+    patient.new_or_returning = existing.is_new_patient ? 'new' : 'returning';
   }
 
   if (existing.id !== currentContact.id) {

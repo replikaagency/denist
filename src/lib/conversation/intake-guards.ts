@@ -1,4 +1,11 @@
 // ---------------------------------------------------------------------------
+// Canonical constants
+// ---------------------------------------------------------------------------
+
+/** Canonical preferred_date value meaning "first available slot". */
+export const EARLIEST_AVAILABLE_PREFERRED_DATE = 'earliest_available';
+
+// ---------------------------------------------------------------------------
 // Boolean guards (yes/no)
 // ---------------------------------------------------------------------------
 
@@ -7,7 +14,7 @@
  */
 export function isYes(message: string): boolean {
   const norm = removeDiacritics(message.trim().toLowerCase());
-  return /^(si|sí|s|yes|y|claro|de acuerdo|por supuesto|correcto|afirmativo|eso es|exacto|cierto|seguro|ajá|aha|así es|así|asi|perfecto|efectivamente)[.!?\s]*$/i.test(norm);
+  return /^(si|sí|s|yes|y|claro|vale|ok|de acuerdo|por supuesto|correcto|afirmativo|eso es|exacto|cierto|seguro|ajá|aha|así es|así|asi|perfecto|efectivamente)[.!?\s]*$/i.test(norm);
 }
 
 /**
@@ -32,63 +39,6 @@ export function looksLikePhone(message: string): boolean {
 
 export function looksLikeEmail(message: string): boolean {
   return !!extractEmailGuard(message);
-}
-
-export type TimePreferenceGuardResult =
-  | { kind: 'value'; value: string }
-  | { kind: 'ask_exact' };
-
-export type FastBookingDetails = {
-  full_name?: string;
-  phone?: string;
-  service_type?: string;
-  preferred_date?: string;
-  preferred_time?: string;
-  new_or_returning?: 'new' | 'returning';
-};
-
-/** Canonical `appointment.preferred_date` when the patient wants the first available slot. */
-export const EARLIEST_AVAILABLE_PREFERRED_DATE = 'earliest_available';
-
-export type OpenAvailabilityPreferenceKind = 'earliest_slot' | 'flexible_time_only';
-
-/**
- * Detect open / ASAP availability intent (deterministic; do not rely on the LLM).
- * - earliest_slot → map to canonical date + flexible time
- * - flexible_time_only → any hour / indifferent to time (when asking for time)
- */
-export function extractOpenAvailabilityPreference(message: string): OpenAvailabilityPreferenceKind | null {
-  const trimmed = message.trim();
-  if (!trimmed) return null;
-  const norm = removeDiacritics(trimmed.toLowerCase());
-
-  if (
-    /\bme\s+da\s+igual\s+(la\s+)?hora\b/.test(norm) ||
-    /\bme\s+es\s+igual\s+(la\s+)?hora\b/.test(norm) ||
-    /\bcualquier\s+hora\b/.test(norm) ||
-    /\bda\s+igual\s+(la\s+)?hora\b/.test(norm)
-  ) {
-    return 'flexible_time_only';
-  }
-
-  if (
-    /\bprimera\s+disponib/.test(norm) ||
-    /\blo\s+antes\s+posible\b/.test(norm) ||
-    /\bcuanto\s+antes\b/.test(norm) ||
-    /\bcuando\s+haya\s+hueco\b/.test(norm) ||
-    /\bcualquier\s+dia\b/.test(norm) ||
-    /\bcualquier\s+momento\b/.test(norm) ||
-    /\bcuando\s+pueda\b/.test(norm) ||
-    /\bcuando\s+puedan\b/.test(norm) ||
-    /\blo\s+primero\s+que\s+(pueda|haya)\b/.test(norm) ||
-    /\bprimer\s+hueco\b/.test(norm) ||
-    /\bprimer\s+agujero\b/.test(norm) ||
-    /\b(en\s+cuanto\s+)?antes\s+posible\b/.test(norm)
-  ) {
-    return 'earliest_slot';
-  }
-
-  return null;
 }
 /**
  * Dental Reception AI — Deterministic Intake Guards
@@ -238,23 +188,17 @@ export function extractEmailGuard(message: string): string | null {
 export function extractNewOrReturningGuard(message: string): 'new' | 'returning' | null {
   const norm = removeDiacritics(message.toLowerCase().trim());
 
-  // Structured UI shortcuts from chat buttons.
-  if (norm === 'patient_status_new') return 'new';
-  if (norm === 'patient_status_returning') return 'returning';
-
   const RETURNING_SIGNALS = [
     'ya soy paciente', 'soy paciente', 'ya vengo', 'ya he venido', 'ya he ido',
     'vuelvo', 'de siempre', 'tengo ficha', 'tengo historial', 'ya estoy',
     'paciente vuestro', 'paciente suyo', 'ya os conozco', 'ya los conozco',
-    'hace tiempo que vengo', 'llevo tiempo', 'sigo siendo', 'he ido antes',
-    'ya fui', 'ya he ido antes',
+    'hace tiempo que vengo', 'llevo tiempo', 'sigo siendo',
   ];
 
   const NEW_SIGNALS = [
     'primera vez', 'es la primera', 'nunca he venido', 'nunca he ido',
     'no he venido', 'no he ido antes', 'soy nuevo', 'soy nueva',
-    'nunca antes', 'primera visita', 'nunca he estado', 'es mi primera vez',
-    'es la primera vez',
+    'nunca antes', 'primera visita', 'nunca he estado',
   ];
 
   for (const signal of RETURNING_SIGNALS) {
@@ -265,131 +209,4 @@ export function extractNewOrReturningGuard(message: string): 'new' | 'returning'
   }
 
   return null;
-}
-
-// ---------------------------------------------------------------------------
-// Time preference guard
-// ---------------------------------------------------------------------------
-
-/**
- * Extract deterministic time preference values from button tokens or free text.
- * - time_morning -> morning
- * - time_afternoon -> afternoon
- * - time_exact -> ask for exact hour on next question
- * Also detects manual input like "mañana", "tarde", "a las 10:30", "sobre las 17".
- */
-export function extractTimePreferenceGuard(message: string): TimePreferenceGuardResult | null {
-  const trimmed = message.trim();
-  if (!trimmed) return null;
-  const norm = removeDiacritics(trimmed.toLowerCase());
-
-  if (norm === 'time_morning') return { kind: 'value', value: 'morning' };
-  if (norm === 'time_afternoon') return { kind: 'value', value: 'afternoon' };
-  if (norm === 'time_exact') return { kind: 'ask_exact' };
-
-  if (norm === 'flexible' || /\bhorario\s+flexible\b/.test(norm)) {
-    return { kind: 'value', value: 'flexible' };
-  }
-
-  // Real-world shorthand like "mañana tarde" usually means date+time ("tomorrow afternoon").
-  if (/\bmanana\b/.test(norm) && /\btarde\b/.test(norm) && !/\bpor\s+la\s+manana\b/.test(norm)) {
-    return { kind: 'value', value: 'afternoon' };
-  }
-
-  if (
-    /\b(por\s+la\s+manana|por\s+las\s+mananas|de\s+la\s+manana|manana|temprano)\b/.test(norm)
-  ) {
-    return { kind: 'value', value: 'morning' };
-  }
-  if (/\b(por\s+la\s+tarde|por\s+las\s+tardes|de\s+la\s+tarde|tarde)\b/.test(norm)) {
-    return { kind: 'value', value: 'afternoon' };
-  }
-
-  const exactMatch = trimmed.match(/\b(?:a|sobre)\s+las\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
-  if (exactMatch) {
-    const hour = exactMatch[1];
-    const mins = exactMatch[2] ? `:${exactMatch[2]}` : '';
-    const ampm = exactMatch[3] ? ` ${exactMatch[3].toLowerCase()}` : '';
-    return { kind: 'value', value: `a las ${hour}${mins}${ampm}`.trim() };
-  }
-
-  return null;
-}
-
-/**
- * Extract multiple booking details from a single patient message.
- * Conservative by design: only obvious service/date/time/status signals.
- */
-export function extractFastBookingDetails(message: string): FastBookingDetails {
-  const details: FastBookingDetails = {};
-  const trimmed = message.trim();
-  if (!trimmed) return details;
-
-  const norm = removeDiacritics(trimmed.toLowerCase());
-
-  const embeddedNameMatch = trimmed.match(
-    /(?:^|[\s,;])(?:soy|me llamo|mi nombre es)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{2,}){1,3})/i,
-  );
-  const name = embeddedNameMatch?.[1] ? capitalizeWords(embeddedNameMatch[1].trim()) : extractNameGuard(trimmed);
-  if (name) details.full_name = name;
-  const embeddedPhoneMatch = trimmed.match(/(?:^|[^\d])(\+?34[\s-]?[6789]\d{8}|0034[\s-]?[6789]\d{8}|[6789]\d{8})(?:[^\d]|$)/);
-  const phone = embeddedPhoneMatch?.[1] ? extractPhoneGuard(embeddedPhoneMatch[1]) : extractPhoneGuard(trimmed);
-  if (phone) details.phone = phone;
-
-  // Service (safe, common booking intents in demos)
-  const serviceSignals: Array<{ re: RegExp; value: string }> = [
-    { re: /\blimpieza\b/, value: 'limpieza' },
-    { re: /\brevision\b/, value: 'revisión' },
-    { re: /\bortodoncia\b/, value: 'ortodoncia' },
-    { re: /\bblanqueamiento\b/, value: 'blanqueamiento' },
-    { re: /\bextraccion\b/, value: 'extracción' },
-    { re: /\bimplante\b/, value: 'implante' },
-    { re: /\burgenc/i, value: 'urgencia dental' },
-  ];
-  const service = serviceSignals.find((s) => s.re.test(norm));
-  if (service) details.service_type = service.value;
-
-  // Date (very conservative, keeps free-text style used by the system)
-  const dayMatch = norm.match(/\b(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/);
-  if (dayMatch) {
-    const dayMap: Record<string, string> = {
-      lunes: 'lunes',
-      martes: 'martes',
-      miercoles: 'miércoles',
-      jueves: 'jueves',
-      viernes: 'viernes',
-      sabado: 'sábado',
-      domingo: 'domingo',
-    };
-    details.preferred_date = dayMap[dayMatch[1]] ?? dayMatch[1];
-  } else if (/\bmanana\b/.test(norm)) {
-    details.preferred_date = 'mañana';
-  } else if (/\bhoy\b/.test(norm)) {
-    details.preferred_date = 'hoy';
-  } else if (/\besta\s+semana\b/.test(norm) || /\besta\s+sem\b/.test(norm)) {
-    details.preferred_date = 'esta semana';
-  }
-
-  // Time preference: prioritize explicit ranges over generic "mañana" token.
-  if (/\bpor\s+la\s+tarde\b/.test(norm)) {
-    details.preferred_time = 'afternoon';
-  } else if (/\bpor\s+la\s+manana\b/.test(norm)) {
-    details.preferred_time = 'morning';
-  } else {
-    const tp = extractTimePreferenceGuard(trimmed);
-    if (tp?.kind === 'value') details.preferred_time = tp.value;
-  }
-
-  const status = extractNewOrReturningGuard(trimmed);
-  if (status) details.new_or_returning = status;
-
-  const openAvail = extractOpenAvailabilityPreference(trimmed);
-  if (openAvail === 'earliest_slot') {
-    details.preferred_date = EARLIEST_AVAILABLE_PREFERRED_DATE;
-    details.preferred_time = 'flexible';
-  } else if (openAvail === 'flexible_time_only') {
-    details.preferred_time = 'flexible';
-  }
-
-  return details;
 }

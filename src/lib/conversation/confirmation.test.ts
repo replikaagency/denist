@@ -7,6 +7,8 @@ import {
   mapCorrectionChoiceToken,
   normalizeConfirmationText,
 } from './confirmation';
+import { buildConfirmationSummary } from './response-builder';
+import { createInitialState } from './schema';
 
 describe('classifyConfirmation', () => {
   it('treats plain affirmations as yes', () => {
@@ -16,12 +18,18 @@ describe('classifyConfirmation', () => {
     expect(classifyConfirmation('vale perfecto')).toBe('yes');
     expect(classifyConfirmation('sí')).toBe('yes');
     expect(classifyConfirmation('confirmo')).toBe('yes');
+    expect(classifyConfirmation('confirmado')).toBe('yes');
+    expect(classifyConfirmation('sii')).toBe('yes');
+    expect(classifyConfirmation('listo')).toBe('yes');
+    expect(classifyConfirmation('confirmar')).toBe('yes');
   });
 
   it('treats plain decline as no', () => {
     expect(classifyConfirmation('no')).toBe('no');
     expect(classifyConfirmation('no gracias')).toBe('no');
     expect(classifyConfirmation('cancelar')).toBe('no');
+    expect(classifyConfirmation('no confirmo')).toBe('no');
+    expect(classifyConfirmation('no confirmar')).toBe('no');
   });
 
   it('returns ambiguous for mixed intent (sí/ok/vale + pero or cambia)', () => {
@@ -53,6 +61,23 @@ describe('classifyConfirmation', () => {
 
   it('returns ambiguous for uncertainty phrases', () => {
     expect(classifyConfirmation('no sé si')).toBe('ambiguous');
+    expect(classifyConfirmation('tengo dudas')).toBe('ambiguous');
+    expect(classifyConfirmation('no estoy convencido')).toBe('ambiguous');
+  });
+});
+
+describe('confirmation copy', () => {
+  it('keeps CTA explicit and action-oriented', () => {
+    const state = createInitialState('conv-copy');
+    state.patient.full_name = 'Ana';
+    state.patient.phone = '612345678';
+    state.appointment.service_type = 'limpieza';
+    state.appointment.preferred_date = '2026-08-15';
+    state.appointment.preferred_time = 'afternoon';
+
+    const msg = buildConfirmationSummary(state.patient, state.appointment);
+    expect(msg).toContain('Responde "Confirmar"');
+    expect(msg).toContain('"Cambiar datos"');
   });
 });
 
